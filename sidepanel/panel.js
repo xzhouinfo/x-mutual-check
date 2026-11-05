@@ -9,6 +9,18 @@ import {
   countBlue,
   applyUnfollow,
   FOLLOW_ERRORS,
+  buildInteractionRank,
+  interactionSummary,
+  sortByScore,
+  sortByInteractions,
+  sortByRecentInteraction,
+  toInteractionCsv,
+  staleDays,
+  filterStale,
+  staleStats,
+  sortByStale,
+  STALE_BUCKETS,
+  INTERACT_KINDS,
 } from "../lib/core.js";
 import { saveSnapshot, listSnapshots } from "../lib/db.js";
 
@@ -18,6 +30,7 @@ const el = {
   recheck: $("recheck"),
   withFollowers: $("withFollowers"),
   scanBtn: $("scanBtn"),
+  intelBtn: $("intelBtn"),
   stopBtn: $("stopBtn"),
   progress: $("progress"),
   barFill: $("barFill"),
@@ -29,14 +42,21 @@ const el = {
   stNotBack: $("stNotBack"),
   stNotBackBlue: $("stNotBackBlue"),
   cardNotBackBlue: $("cardNotBackBlue"),
+  stNotBackNon: $("stNotBackNon"),
+  cardNotBackNon: $("cardNotBackNon"),
   stPure: $("stPure"),
   stRate: $("stRate"),
+  stStale: $("stStale"),
+  cardStale: $("cardStale"),
+  stZero: $("stZero"),
+  cardZero: $("cardZero"),
   tabs: $("tabs"),
   toolbar: $("toolbar"),
   search: $("search"),
   sortBy: $("sortBy"),
   blueOnly: $("blueOnly"),
   exportBtn: $("exportBtn"),
+  staleChips: $("staleChips"),
   list: $("list"),
   footer: $("footer"),
   toast: $("toast"),
@@ -45,8 +65,9 @@ const el = {
 const state = {
   tab: "notBack",
   query: "",
-  onlyBlue: false,
-  sortBy: "weight", // weight=影响力（蓝V+粉丝数）  tracked=跟踪最久（本地历史）
+  blueMode: "all", // all=全部  blue=只看蓝V  nonblue=只看非蓝V
+  staleBucket: "d180", // 沉默 tab 默认看「半年+」，跟需求「很久没更新」对得上
+  sortBy: "weight", // 影响力 / 跟踪最久 / 最久没更新 / 互动分 / 互动次数 / 最近互动
   result: null,
   changes: null,
   prevSnapshot: null,
@@ -58,6 +79,10 @@ const state = {
   items: [],
   followed: new Set(), // 本次会话里手动关注过的 handle，重渲染后仍要保留「已关注」
   unfollowed: new Set(), // 本次会话里取关过的 handle，用于防止误重复操作
+  interactions: null, // 互动排行榜（已经按人汇总好）
+  intelSummary: null, // 覆盖天数 / 条数 / 人数
+  intelAt: null,
+  intelScanned: 0,
   prog: { kind: "following", pages: 0, loaded: 0, totalCount: null, stage: 1, totalStages: 1 },
 };
 
@@ -155,6 +180,7 @@ function showProgress(on) {
 function setScanning(on) {
   state.scanning = on;
   el.scanBtn.disabled = on;
+  el.intelBtn.disabled = on;
   el.scanBtn.textContent = on ? "扫描中…" : "开始扫描";
   el.stopBtn.hidden = !on;
   el.withFollowers.disabled = on;
@@ -167,18 +193,21 @@ function updateProgress(msg) {
   if (typeof msg.loaded === "number") p.loaded = msg.loaded;
   if (typeof msg.totalCount === "number") p.totalCount = msg.totalCount;
 
-  const label = p.kind === "following" ? "关注列表" : "粉丝列表";
+  const label = p.kind === "following" ? "关注列表" : p.kind === "followers" ? "粉丝列表" : "通知流";
   const stage = p.totalStages > 1 ? `第 ${p.stage}/${p.totalStages} 步 · ` : "";
 
   let pct = 0;
   if (p.totalCount) pct = Math.min(99, Math.round((p.loaded / p.totalCount) * 100));
+  else if (p.kind === "interactions") pct = Math.min(90, p.pages * 18);
   else pct = Math.min(90, p.pages * 12);
 
   el.barFill.style.width = pct + "%";
   el.progressText.textContent =
     msg.phase === "backoff"
       ? `${stage}${label} 被限流，等待重试…（第 ${msg.retries} 次）`
-      : `${stage}${label} 第 ${p.pages} 页，已读取 ${p.loaded} 人`;
+      : p.kind === "interactions"
+        ? `${label} 第 ${p.pages} 页，已提取 ${p.loaded} 条互动`
+        : `${stage}${label} 第 ${p.pages} 页，已读取 ${p.loaded} 人`;
 }
 
 async function startScan() {
@@ -269,14 +298,74 @@ async function startScan() {
     if (!fans) setHint("本次未拉粉丝列表，所以纯粉丝和掉粉统计为空。", false);
   } catch (e) {
     showProgress(false);
-    const msg = e.message || String(e);
-    if (msg === "NO_TAB") setHint("没有找到 x.com 标签页。先打开 <a href='https://x.com' target='_blank'>x.com</a> 并登录，再回来扫描。", true);
-    else if (msg === "ABORTED") setHint("已停止扫描。", false);
-    else if (msg === "NO_CONTENT") setHint("这个 x.com 页面还没注入脚本，刷新一下页面再试。", true);
-    else if (msg === "NO_LOGIN") setHint("这个页面没有登录态，请先登录 X。", true);
-    else if (msg === "NO_USER_ID") setHint("读不到当前账号 ID，刷新 x.com 页面后重试。", true);
-    else if (msg === "RATE_LIMITED") setHint("请求被限流了，等几分钟再试。", true);
-    else setHint("扫描失败：" + msg, true);
+    explainScanError(e.message || String(e));
+  } finally {
+    setScanning(false);
+  }
+}
+
+/* ---------- 互动扫描 ---------- */
+
+/** 扫描失败的原因翻译成人话，两个扫描入口共用。 */
+function explainScanError(msg) {
+  if (msg === "NO_TAB") setHint("没有找到 x.com 标签页。先打开 <a href='https://x.com' target='_blank'>x.com</a> 并登录，再回来扫描。", true);
+  else if (msg === "ABORTED") setHint("已停止扫描。", false);
+  else if (msg === "NO_CONTENT") setHint("这个 x.com 页面还没注入脚本，刷新一下页面再试。", true);
+  else if (msg === "NO_LOGIN") setHint("这个页面没有登录态，请先登录 X。", true);
+  else if (msg === "NO_USER_ID") setHint("读不到当前账号 ID，刷新 x.com 页面后重试。", true);
+  else if (msg === "RATE_LIMITED") setHint("请求被限流了，等几分钟再试。", true);
+  else if (msg === "BAD_REQUEST") setHint("通知接口返回 400，通常是参数过期了，刷新 x.com 页面再试。", true);
+  else setHint("扫描失败：" + msg, true);
+}
+
+async function scanInteractions() {
+  if (state.scanning) return;
+  setScanning(true);
+  showProgress(true);
+  setHint("");
+  state.prog = { kind: "interactions", pages: 0, loaded: 0, totalCount: null, stage: 1, totalStages: 1 };
+  updateProgress({});
+
+  try {
+    const tab = await findXTab();
+    if (!tab) throw new Error("NO_TAB");
+    const info = await ensureContent(tab.id);
+    if (!info) throw new Error("NO_CONTENT");
+    if (!info.loggedIn) throw new Error("NO_LOGIN");
+
+    const jobId = Math.random().toString(36).slice(2);
+    const r = await sendTab(tab.id, { type: "SCAN_INTERACTIONS", jobId, maxPages: 12 });
+    if (!r || !r.ok) throw new Error(r ? r.error : "SCAN_FAILED");
+
+    state.interactions = buildInteractionRank(r.records || [], r.users || {});
+    state.intelSummary = interactionSummary(r.records || []);
+    state.intelAt = Date.now();
+    state.intelScanned = (r.records || []).length;
+
+    // 扫完直接切到互动榜，省得用户再点一次
+    state.tab = "interact";
+    state.blueMode = "all";
+    state.query = "";
+    el.search.value = "";
+    state.sortBy = "score";
+    el.sortBy.value = "score";
+
+    renderAll();
+    showProgress(false);
+
+    const s = state.intelSummary;
+    if (!s.events) {
+      setHint("通知流是空的——可能你把通知清空了，或者这是个几乎没人互动的新号。", false);
+      toast("没扫到互动记录");
+    } else {
+      toast(`互动榜：${state.interactions.length} 人 / ${s.events} 条互动${s.days ? `（近 ${s.days} 天）` : ""}`, 3600);
+      if (r.unresolved) {
+        setHint(`有 ${r.unresolved} 条通知反查不到是谁（对方可能注销或受保护），已跳过。`, false);
+      }
+    }
+  } catch (e) {
+    showProgress(false);
+    explainScanError(e.message || String(e));
   } finally {
     setScanning(false);
   }
@@ -290,7 +379,7 @@ function rebuildResult(snap) {
   const mutual = following.filter((u) => u.mutual);
   const notBack = following.filter((u) => !u.mutual);
   const folSet = new Set(following.map((u) => String(u.sn).toLowerCase()));
-  const pureFans = followers.filter((u) => !folSet.has(String(u.sn).toLowerCase()));
+  const pureFans = followers.filter((f) => !folSet.has(String(f.sn).toLowerCase()));
   return {
     following,
     followers,
@@ -303,6 +392,8 @@ function rebuildResult(snap) {
         followers: followers.length,
         mutual: mutual.length,
         notBack: notBack.length,
+        notBackBlue: notBack.filter((u) => u.verified).length,
+        followingNonBlue: following.filter((u) => !u.verified).length,
         pureFans: pureFans.length,
         mutualRate: following.length ? Math.round((mutual.length / following.length) * 1000) / 10 : 0,
       },
@@ -321,9 +412,52 @@ function changeItems() {
   return out;
 }
 
-const sortRows = (rows) => (state.sortBy === "tracked" ? sortByTracked(rows) : sortByWeight(rows));
+const SORTERS = {
+  weight: sortByWeight,
+  tracked: sortByTracked,
+  stale: (rows) => sortByStale(rows),
+  score: sortByScore,
+  count: sortByInteractions,
+  recent: sortByRecentInteraction,
+};
+
+/** 每个 tab 有自己合适的默认排序：互动看分数，沉默看天数。 */
+const DEFAULT_SORT = {
+  notBack: "weight",
+  mutual: "weight",
+  pureFans: "weight",
+  interact: "score",
+  stale: "stale",
+  changes: "weight",
+};
+
+const sortRows = (rows) => (SORTERS[state.sortBy] || sortByWeight)(rows);
+
+/** 我关注的人里，很久没发帖的。沉默 tab 与统计栏共用这一份数据。 */
+function staleRows() {
+  const fol = (state.result && state.result.following) || [];
+  return filterStale(fol, "all");
+}
 
 function tabItems() {
+  switch (state.tab) {
+    case "interact": {
+      const rows = sortRows(state.interactions || []).map((u, i) => ({
+        ...u,
+        rank: i + 1,
+        canFollow: !u.following && !state.followed.has(u.sn),
+        rel: u.following && u.followedBy ? "互关" : u.following ? "已关注" : u.followedBy ? "关注我" : "",
+      }));
+      return rows;
+    }
+    case "stale": {
+      const rows = sortRows(filterStale(staleRows(), state.staleBucket));
+      for (const u of rows) u.canUnfollow = true;
+      return rows;
+    }
+    default:
+      break;
+  }
   if (!state.result) return [];
   switch (state.tab) {
     case "notBack": {
@@ -349,7 +483,8 @@ function tabItems() {
 }
 
 function filtered() {
-  return filterRows(tabItems(), { onlyBlue: state.onlyBlue, query: state.query });
+  // 沉默 tab 的分档已经在 tabItems 里筛过，这里只叠蓝V/关键词
+  return filterRows(tabItems(), { blueMode: state.blueMode, query: state.query });
 }
 
 /* ---------- 关注 / 取关动作 ---------- */
@@ -490,9 +625,52 @@ function unfollowBtn(u) {
   return b;
 }
 
+const KIND_ORDER = ["reply", "like", "retweet", "mention", "quote", "follow", "other"];
+const KIND_LABEL = Object.fromEntries(
+  Object.entries(INTERACT_KINDS).map(([, v]) => [v.key, v.label])
+);
+KIND_LABEL.other = "其他";
+
+/** 互动明细：回复 3 · 点赞 5 …按权重从重到轻 */
+function kindsNode(kinds) {
+  const box = document.createElement("div");
+  box.className = "kinds";
+  for (const key of KIND_ORDER) {
+    const n = kinds[key];
+    if (!n) continue;
+    const s = document.createElement("span");
+    s.className = "kind " + key;
+    s.textContent = `${KIND_LABEL[key] || key} ${n}`;
+    box.appendChild(s);
+  }
+  return box;
+}
+
+/** 「最后发帖 + 多久没发」那一行；沉默 tab 才用。 */
+function staleNode(u) {
+  const s = document.createElement("span");
+  const days = staleDays(u);
+  if (days === null) {
+    s.className = "stale-num";
+    s.textContent = "· 从没发过推文";
+    return s;
+  }
+  s.className = "stale-num" + (days < 30 ? " fresh" : "");
+  const d = new Date(u.lastTweetAt);
+  s.textContent = `· 最后发帖 ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}（${days} 天前）`;
+  return s;
+}
+
 function userNode(u) {
   const row = document.createElement("article");
   row.className = "user";
+
+  if (u.rank) {
+    const r = document.createElement("span");
+    r.className = "rank" + (u.rank <= 3 ? " top" : "");
+    r.textContent = u.rank;
+    row.appendChild(r);
+  }
 
   const img = document.createElement("img");
   img.className = "avatar";
@@ -508,9 +686,9 @@ function userNode(u) {
   l1.className = "u-line1";
   const name = document.createElement("span");
   name.className = "u-name";
-  name.textContent = u.name || u.sn;
+  name.textContent = u.name || u.sn || "(未知账号)";
   name.title = "打开主页";
-  name.addEventListener("click", () => chrome.tabs.create({ url: "https://x.com/" + u.sn }));
+  if (u.sn) name.addEventListener("click", () => chrome.tabs.create({ url: "https://x.com/" + u.sn }));
   l1.appendChild(name);
   if (u.verified) {
     const v = document.createElement("span");
@@ -519,12 +697,18 @@ function userNode(u) {
     v.title = "蓝V 认证";
     l1.appendChild(v);
   }
+  if (u.rel) {
+    const rel = document.createElement("span");
+    rel.className = "rel" + (u.rel === "互关" ? " mutual" : "");
+    rel.textContent = u.rel;
+    l1.appendChild(rel);
+  }
 
   const l2 = document.createElement("div");
   l2.className = "u-line2";
   const sn = document.createElement("span");
   sn.className = "u-sn";
-  sn.textContent = "@" + u.sn;
+  sn.textContent = "@" + (u.sn || "—");
   const fc = document.createElement("span");
   fc.textContent = "· " + fmt(u.followers) + " 粉丝";
   l2.append(sn, fc);
@@ -539,18 +723,40 @@ function userNode(u) {
       ord.title = "来自你本机的扫描历史，不是 X 的关注时间";
       l2.appendChild(ord);
     }
+  } else if (state.tab === "stale") {
+    l2.appendChild(staleNode(u));
+  } else if (state.tab === "interact" && u.lastAt) {
+    const t = document.createElement("span");
+    t.className = "u-order";
+    t.textContent = "· 最后互动 " + timeText(u.lastAt);
+    l2.appendChild(t);
   }
 
   main.append(l1, l2);
 
-  if (u.bio) {
+  if (u.bio && state.tab !== "interact") {
+    // 互动榜一屏要看更多人，简介就省了
     const bio = document.createElement("div");
     bio.className = "u-bio";
     bio.textContent = u.bio;
     main.appendChild(bio);
   }
 
+  if (u.kinds && u.count) main.appendChild(kindsNode(u.kinds));
+
   row.append(img, main);
+
+  if (typeof u.score === "number") {
+    const sc = document.createElement("div");
+    sc.className = "score";
+    const b = document.createElement("b");
+    b.textContent = u.score;
+    const sp = document.createElement("span");
+    sp.textContent = u.count + " 次";
+    sp.title = "加权分：" + u.count + " 次互动，回复/转发/@ 各算 3 分，点赞 1 分，关注 2 分";
+    sc.append(b, sp);
+    row.appendChild(sc);
+  }
 
   if (u.canFollow) row.appendChild(followBtn(u));
   else if (u.canUnfollow) row.appendChild(unfollowBtn(u));
@@ -584,6 +790,7 @@ function appendChunk() {
 
 function renderList() {
   el.list.innerHTML = "";
+  el.staleChips.hidden = state.tab !== "stale";
   state.items = filtered();
   state.loaded = 0;
   if (!state.items.length) {
@@ -592,9 +799,15 @@ function renderList() {
     const p1 = document.createElement("p");
     const p2 = document.createElement("p");
     p2.className = "muted small";
-    if (state.onlyBlue) {
-      p1.textContent = "这里没有蓝V。";
-      p2.textContent = "点一下「蓝V」按钮取消筛选。";
+    if (state.blueMode !== "all") {
+      p1.textContent = state.blueMode === "blue" ? "这里没有蓝V。" : "这里没有非蓝V账号。";
+      p2.textContent = "点一下筛选按钮切换到「全部」。";
+    } else if (state.tab === "interact") {
+      p1.textContent = state.interactions ? "这个筛选下没有互动记录。" : "还没扫过互动。";
+      p2.textContent = state.interactions ? "" : "点上面的「扫互动」，读通知流统计最近谁跟你互动最多。";
+    } else if (state.tab === "stale") {
+      p1.textContent = state.result ? "这一档没有沉默号。" : "还没有扫描数据。";
+      p2.textContent = state.result ? "换一档看看，或点「全部」。" : "先点「开始扫描」读取关注列表。";
     } else if (state.tab === "notBack") {
       p1.textContent = "没有未回关的人。";
       p2.textContent = "或者本次没拉粉丝列表，判定依据只有接口字段。";
@@ -625,26 +838,71 @@ function renderStats() {
   el.stMutual.textContent = fmt(s.mutual);
   el.stNotBack.textContent = fmt(s.notBack);
   el.stNotBackBlue.textContent = fmt(countBlue(state.result.notBack));
+  el.stNotBackNon.textContent = fmt(state.result.notBack.filter((u) => !u.verified).length);
   el.stPure.textContent = s.pureFans === null || s.pureFans === undefined ? "—" : fmt(s.pureFans);
   el.stRate.textContent = s.mutualRate + "%";
+
+  const st = staleStats(state.result.following);
+  el.stStale.textContent = fmt(st.d180);
+  el.stZero.textContent = fmt(st.none);
 }
 
+const BLUE_LABEL = { all: "蓝V", blue: "仅蓝V", nonblue: "仅非V" };
+
 function syncFilterUI() {
-  el.blueOnly.setAttribute("aria-pressed", String(state.onlyBlue));
+  el.blueOnly.textContent = BLUE_LABEL[state.blueMode] || "蓝V";
+  el.blueOnly.setAttribute("aria-pressed", String(state.blueMode !== "all"));
+  el.blueOnly.title =
+    state.blueMode === "all" ? "点一下：只看蓝V" : state.blueMode === "blue" ? "再点一下：只看非蓝V" : "再点一下：显示全部";
+}
+
+/** 沉默 tab 的分档 chips：每档带人数 */
+function renderStaleChips() {
+  el.staleChips.innerHTML = "";
+  if (state.tab !== "stale" || !state.result) {
+    el.staleChips.hidden = true;
+    return;
+  }
+  el.staleChips.hidden = false;
+  const rows = staleRows();
+  const st = staleStats(rows);
+  const defs = [{ key: "all", label: "全部", n: rows.length }].concat(
+    STALE_BUCKETS.map((b) => ({ key: b.key, label: b.label, n: st[b.key] || 0 }))
+  );
+  for (const d of defs) {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.setAttribute("aria-pressed", String(state.staleBucket === d.key));
+    b.append(document.createTextNode(d.label));
+    const em = document.createElement("em");
+    em.textContent = d.n;
+    b.appendChild(em);
+    b.addEventListener("click", () => {
+      state.staleBucket = d.key;
+      renderStaleChips();
+      renderList();
+      el.list.scrollTop = 0;
+    });
+    el.staleChips.appendChild(b);
+  }
 }
 
 function renderTabs() {
-  if (!state.result) {
+  const hasAny = !!state.result || !!state.interactions;
+  if (!hasAny) {
     el.tabs.hidden = true;
     el.toolbar.hidden = true;
+    el.staleChips.hidden = true;
     return;
   }
   el.tabs.hidden = false;
   el.toolbar.hidden = false;
   const counts = {
-    notBack: state.result.notBack.length,
-    mutual: state.result.mutual.length,
-    pureFans: state.result.pureFans.length,
+    notBack: state.result ? state.result.notBack.length : 0,
+    mutual: state.result ? state.result.mutual.length : 0,
+    pureFans: state.result ? state.result.pureFans.length : 0,
+    interact: state.interactions ? state.interactions.length : 0,
+    stale: state.result ? filterStale(staleRows(), state.staleBucket).length : 0,
     changes: changeItems().length,
   };
   for (const btn of el.tabs.querySelectorAll("button")) {
@@ -652,17 +910,24 @@ function renderTabs() {
     btn.classList.toggle("active", t === state.tab);
     btn.querySelector("em").textContent = counts[t] || 0;
   }
+  renderStaleChips();
 }
 
 function renderFooter() {
   const snap = state.currentSnapshot;
-  if (!snap) {
+  if (!snap && !state.intelAt) {
     el.footer.innerHTML = "<span>数据仅保存在本机</span>";
     return;
   }
   el.footer.innerHTML = "";
   const left = document.createElement("span");
-  left.textContent = "上次扫描 " + timeText(snap.ts);
+  const bits = [];
+  if (snap) bits.push("上次扫描 " + timeText(snap.ts));
+  if (state.intelAt) bits.push(`互动 ${timeText(state.intelAt)}`);
+  left.textContent = bits.join(" · ");
+  if (state.intelSummary && state.intelSummary.days) {
+    left.title = `互动榜基于 ${state.intelSummary.events} 条通知，覆盖最近 ${state.intelSummary.days} 天`;
+  }
   const right = document.createElement("a");
   right.href = "#";
   right.textContent = "清除本机记录";
@@ -674,6 +939,9 @@ function renderFooter() {
     state.result = null;
     state.changes = null;
     state.currentSnapshot = null;
+    state.interactions = null;
+    state.intelSummary = null;
+    state.intelAt = null;
     renderAll();
     toast("已清除本机快照");
   });
@@ -696,13 +964,16 @@ function exportCsv() {
     toast("当前列表是空的，没什么可导出");
     return;
   }
-  const csv = toCsv(items);
+  const csv = state.tab === "interact" ? toInteractionCsv(items) : toCsv(items);
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  const nameMap = { notBack: "未回关", mutual: "互关", pureFans: "纯粉丝", changes: "变化" };
+  const nameMap = { notBack: "未回关", mutual: "互关", pureFans: "纯粉丝", interact: "互动榜", stale: "沉默号", changes: "变化" };
+  const blueSuffix = state.blueMode === "blue" ? "_蓝V" : state.blueMode === "nonblue" ? "_非V" : "";
+  const bucket = STALE_BUCKETS.find((b) => b.key === state.staleBucket);
+  const bucketSuffix = state.tab === "stale" && bucket ? "_" + bucket.label : "";
   a.href = url;
-  a.download = `X_${nameMap[state.tab] || "列表"}${state.onlyBlue ? "_蓝V" : ""}_${stamp()}.csv`;
+  a.download = `X_${nameMap[state.tab] || "列表"}${blueSuffix}${bucketSuffix}_${stamp()}.csv`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
   toast(`已导出 ${items.length} 条`);
@@ -712,6 +983,7 @@ function exportCsv() {
 
 async function boot() {
   el.scanBtn.addEventListener("click", startScan);
+  el.intelBtn.addEventListener("click", scanInteractions);
   el.stopBtn.addEventListener("click", async () => {
     const tab = await findXTab();
     if (tab) sendTab(tab.id, { type: "STOP" }, 3000).catch(() => {});
@@ -722,28 +994,46 @@ async function boot() {
   el.recheck.addEventListener("click", detect);
   el.exportBtn.addEventListener("click", exportCsv);
   el.blueOnly.addEventListener("click", () => {
-    state.onlyBlue = !state.onlyBlue;
+    state.blueMode = state.blueMode === "all" ? "blue" : state.blueMode === "blue" ? "nonblue" : "all";
     syncFilterUI();
     renderList();
-    toast(state.onlyBlue ? "只看蓝V" : "显示全部");
+    el.list.scrollTop = 0;
+    toast(state.blueMode === "all" ? "显示全部账号" : state.blueMode === "blue" ? "只看蓝V" : "只看非蓝V");
   });
   el.sortBy.addEventListener("change", (e) => {
     state.sortBy = e.target.value;
     renderList();
     el.list.scrollTop = 0;
-    toast(state.sortBy === "tracked" ? "按跟踪时长排序（本机历史）" : "按影响力排序（蓝V优先）");
+    const tips = {
+      weight: "按影响力排序（蓝V优先、粉丝多在前）",
+      tracked: "按跟踪时长排序（本机历史）",
+      stale: "最久没发帖的排最前",
+      score: "按互动加权分排序",
+      count: "按互动次数排序",
+      recent: "按最近互动时间排序",
+    };
+    toast(tips[state.sortBy] || "已切换排序");
   });
   el.cardNotBackBlue.addEventListener("click", () => {
     if (!state.result) return;
-    state.tab = "notBack";
-    state.onlyBlue = true;
-    state.query = "";
-    el.search.value = "";
-    syncFilterUI();
-    renderTabs();
-    renderList();
-    el.list.scrollTop = 0;
+    jumpTo("notBack", { blueMode: "blue" });
     toast(`未回关的蓝V：${countBlue(state.result.notBack)} 人`);
+  });
+  el.cardNotBackNon.addEventListener("click", () => {
+    if (!state.result) return;
+    const n = state.result.notBack.filter((u) => !u.verified).length;
+    jumpTo("notBack", { blueMode: "nonblue" });
+    toast(`未回关、没有蓝V的：${n} 人`);
+  });
+  el.cardStale.addEventListener("click", () => {
+    if (!state.result) return;
+    jumpTo("stale", { bucket: "d180" });
+    toast("半年以上没发帖的人");
+  });
+  el.cardZero.addEventListener("click", () => {
+    if (!state.result) return;
+    jumpTo("stale", { bucket: "none" });
+    toast("一条推文都没发过的号");
   });
   el.search.addEventListener("input", (e) => {
     state.query = e.target.value;
@@ -752,10 +1042,7 @@ async function boot() {
   el.tabs.addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-tab]");
     if (!btn) return;
-    state.tab = btn.dataset.tab;
-    renderTabs();
-    renderList();
-    el.list.scrollTop = 0;
+    switchTab(btn.dataset.tab);
   });
   el.list.addEventListener("scroll", () => {
     if (state.loaded >= state.items.length) return;
@@ -763,6 +1050,35 @@ async function boot() {
   });
 
   await detect();
+}
+
+/** 切 tab：顺手把排序切到这个 tab 更合适的那档。 */
+function switchTab(tab) {
+  state.tab = tab;
+  const def = DEFAULT_SORT[tab];
+  if (def) {
+    state.sortBy = def;
+    el.sortBy.value = def;
+  }
+  renderTabs();
+  renderList();
+  el.list.scrollTop = 0;
+}
+
+/** 统计卡片点击：跳 tab + 带上筛选条件。 */
+function jumpTo(tab, { blueMode = "all", bucket = "all" } = {}) {
+  state.blueMode = blueMode;
+  state.staleBucket = bucket;
+  state.query = "";
+  el.search.value = "";
+  state.tab = tab;
+  const def = DEFAULT_SORT[tab];
+  state.sortBy = def;
+  el.sortBy.value = def;
+  syncFilterUI();
+  renderTabs();
+  renderList();
+  el.list.scrollTop = 0;
 }
 
 async function detect() {
@@ -789,6 +1105,7 @@ async function detect() {
   state.userId = info.userId;
   setAccount("已连接 · 账号 ID " + info.userId);
   el.scanBtn.disabled = false;
+  el.intelBtn.disabled = false;
   setHint("");
 
   // 已有快照就直接渲染，不用每次重扫

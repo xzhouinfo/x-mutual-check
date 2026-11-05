@@ -408,3 +408,81 @@ button { font-family: inherit; font-size: 12.5px; }
   max-width: 88vw;
   text-align: center;
 }
+
+/* ---------- v0.4.0：互动榜 / 沉默号 / 子筛选条 ---------- */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap; /* 6 个档位塞不下就换行，别把「零推文」藏到横向滚动里 */
+  gap: 5px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.chips .chip { height: 26px; padding: 0 9px; font-size: 11.5px; }
+.chips .chip em {
+  font-style: normal;
+  color: var(--text-3);
+  font-size: 10.5px;
+  margin-left: 4px;
+}
+.chips .chip[aria-pressed="true"] em { color: inherit; }
+
+/* 排行榜名次 */
+.rank {
+  flex: none;
+  width: 16px;
+  align-self: center;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-3);
+}
+.rank.top { color: var(--accent); }
+
+/* 互动明细小标签 */
+.kinds { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
+.kind {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.kind.reply, .kind.mention, .kind.quote, .kind.retweet {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.kind.follow { background: var(--ok-soft); color: var(--ok); }
+
+.score {
+  flex: none;
+  align-self: center;
+  text-align: center;
+  min-width: 34px;
+}
+.score b { display: block; font-size: 14px; font-weight: 700; color: var(--accent); line-height: 1.1; }
+.score span { font-size: 10px; color: var(--text-3); }
+
+/* 沉默天数 */
+.stale-num { color: var(--warn); font-weight: 600; }
+.stale-num.fresh { color: var(--text-3); font-weight: 400; }
+
+/* 互动榜里的关系小标 */
+.rel {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 99px;
+  background: var(--surface-2);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.rel.mutual { background: var(--ok-soft); color: var(--ok); }
+
+/* hidden 属性默认被 display:flex/grid 盖掉，统一兜住；
+   否则未显示的 chips / tabs / stats 依然会占高度 */
+[hidden] { display: none !important; }
+
+/* 6 个 tab 挤在 400px 里：收一点左右内边距刚好放下，不用横向滚动 */
+.tabs button { padding-left: 7px; padding-right: 7px; }

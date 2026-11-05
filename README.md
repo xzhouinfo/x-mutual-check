@@ -24,17 +24,21 @@ POST /i/api/1.1/friendships/create.json        body: user_id=... 或 screen_name
 - **一键扫描**：读你的关注列表，按 `followed_by` 字段判断谁没回关
 - **三档分类**：未回关 / 互关 / 纯粉丝（关注你但你没关注）
 - **未回关蓝V**：统计栏单独一格，点一下直接筛出「你关注了但对方没回关」的蓝V名单
+- **蓝V / 非蓝V 切换**：筛选按钮点一下看蓝V、再点看**非蓝V**，任何一档里都能切
+- **互动排行榜**：读通知流，按人统计最近谁跟你互动最多（回复 / 点赞 / 转发 / @你 / 关注），带加权分、明细和最后互动时间
+- **沉默号**：按最后发帖时间分档（30天+/90天+/半年+/一年+/零推文），找出关注了但早就不更新的号
 - **快照对比**：和上次扫描比对，列出掉了哪些粉、新增了哪些未回关、谁回关了你
-- **筛选排序**：默认蓝V优先、粉丝数降序；也可按「跟踪最久」排，看谁已经被记录很久还没回关
+- **筛选排序**：蓝V优先、粉丝数降序；也可按跟踪最久、最久没更新、互动分 / 互动次数 / 最近互动排
 - **直接回关**：纯粉丝列表每行有「+ 关注」按钮，点一下就关注，不用跳页面
-- **直接取关**：未回关列表每行有「取关」按钮，两段式确认（第一次变「确认?」，3 秒内再点才执行）
-- **导出 CSV**：带 BOM，Excel 直接打开不乱码，文件名自动带「蓝V」后缀
+- **直接取关**：未回关 / 沉默号列表每行有「取关」按钮，两段式确认（第一次变「确认?」，3 秒内再点才执行）
+- **导出 CSV**：带 BOM，Excel 直接打开不乱码，文件名自动带「蓝V / 非V / 分档」后缀
 
 ## 读写边界
 
 | 操作 | 接口 | 说明 |
 |---|---|---|
-| 扫描关注/粉丝 | `GET /i/api/1.1/friends/following/list.json`、`GET /i/api/1.1/followers/list.json` | 只读 |
+| 扫描关注/粉丝 | `GET /i/api/1.1/friends/following/list.json`、`GET /i/api/1.1/followers/list.json` | 只读，带 `status` 拿最后发帖时间 |
+| 扫互动榜 | `GET /i/api/2/notifications/all.json` | 只读，读你自己的通知流，最多 12 页 |
 | 核对关系 | `GET /i/api/1.1/friendships/show.json` | 只读，写操作后用来确认是否真生效 |
 | 单条关注 | `POST /i/api/1.1/friendships/create.json` | 只有你点「+ 关注」才发，一次一个人 |
 | 单条取关 | `POST /i/api/1.1/friendships/destroy.json` | 只有你点两次「取关」才发，一次一个人 |
@@ -63,9 +67,10 @@ Edge 同理，地址换成 `edge://extensions/`。
 1. 打开并登录 x.com（任意页面都行，插件要借这个页面的登录态）
 2. 点插件图标打开侧边栏，显示「已连接 · 账号 ID …」就绪
 3. 勾选「同时拉取粉丝列表」可多算纯粉丝和掉粉（请求数翻倍）
-4. 点「开始扫描」
-5. 点统计栏的「未回关蓝V」直接看核心名单；也可用工具栏「蓝V」按钮在任意标签内筛
-6. 纯粉丝标签里点「+ 关注」当场回关；未回关标签里连点两次「取关」清人；要留档就点「导出」
+4. 点「开始扫描」——顺手把每个人的最后发帖时间也读回来，沉默号就用它
+5. 点统计栏的「未回关蓝V」「未回关非V」「半年未更」「零推文」都能直接跳到对应名单；工具栏的筛选按钮可以在任何一档里切 全部 / 蓝V / 非V
+6. 要看谁跟你互动最多，点「扫互动」：读通知流，按加权分排出排行榜（回复 / 转发 / @ 各 3 分，关注 2 分，点赞 1 分）
+7. 纯粉丝标签里点「+ 关注」当场回关；未回关 / 沉默号标签里连点两次「取关」清人；要留档就点「导出」
 
 ### 实测接口状态（2026-11-05）
 
@@ -73,9 +78,14 @@ Edge 同理，地址换成 `edge://extensions/`。
 |---|---|
 | `following/list.json` | 200，200 条/页，`followed_by` 字段 20/20 都在 |
 | `followers/list.json` | 200，200 条/页 |
+| `following/list.json`（不带 `skip_status`） | 200，多出 `status.created_at` → 沉默号靠它；体积约 3 倍（524 人 ≈ 1.7MB） |
+| `v2/notifications/all.json` | 200，`count` 上限 40，超过直接 400；能翻到约 371 条就到底 |
 | `friendships/create.json` | 200，`user_id` 与 `screen_name` 两种传法都可用，幂等 |
 | `friendships/destroy.json` | 200，幂等 |
 | `friendships/show.json` | 200，`source_id+target_id`、`source_id+target_screen_name`、双 `screen_name` 三种传法都可用 |
+| `statuses/user_timeline.json` | **200 但 body 为空**，v1.1 状态类端点对网页端已废 |
+| `statuses/mentions_timeline.json` | **同上，200 + 空 body** |
+| `favorites/list.json` | **404 `code 34`**，点赞列表拿不到 |
 | `users/show.json` | **404，已下线**（所以关注时用 `screen_name` 兜底，不依赖它） |
 | GraphQL `Following` | 需要 `x-client-transaction-id`，且响应里**没有** `followed_by`，故弃用 |
 
@@ -104,6 +114,7 @@ Edge 同理，地址换成 `edge://extensions/`。
 不申请 `cookies`（不需要，内容脚本直接读 `document.cookie`）、不申请 `tabs`（只用 URL 匹配找标签页）、
 不申请 `webRequest`、不申请 `downloads`（导出用 Blob + a[download]）。
 「+ 关注」是内容脚本在 x.com 页内发的同源 POST，同样不需要额外权限。
+读通知流也是同源 `fetch`（`/i/api/2/notifications/all.json`），不多一个权限。
 
 ## 隐私
 
@@ -121,11 +132,15 @@ Edge 同理，地址换成 `edge://extensions/`。
 - 写完之后名单不会立刻重排，要点「开始扫描」才更新；按钮会先给出结果状态
 - 「已跟踪 N 天」来自**你本机的扫描历史**，不是 X 的关注时间——第一次扫描时所有人的天数都是 0，用得越久越准
 - 关注列表接口有缓存延迟：刚关注/取关的人可能几分钟内不出现在列表里（实测 7 分钟仍未刷新）
+- **互动榜只看得到通知流里还有的历史**：X 不按时间倒着无限给，实测一个账号翻到 371 条就到底（覆盖 26 天）。所以榜单是「最近这段时间谁跟你互动最多」，不是终身累计，面板底部会写清覆盖范围
+- **互动榜只算他 → 你的方向**：回复、点赞、转发、@你、关注你。你 → 他的方向拿不到——`statuses/user_timeline.json` 和 `favorites/list.json` 都已失效（见上表），没有可靠数据源
+- 互动数据**只存在内存里**，关掉侧边栏就没了，重开要点一次「扫互动」；关注/粉丝快照才会存进 IndexedDB
+- 沉默号依赖 `status.created_at`：零推文号没有这个字段，单独归到「零推文」一档；极少数账号取不到时间，不在任何档里
 
 ## 开发
 
 ```bash
-# 核心逻辑单测（27 个用例，含实测账号数据回归）
+# 核心逻辑单测（40 个用例，含实测账号数据回归）
 node --test tests/core.test.mjs
 
 # UI 本地预览（伪造 chrome API + 假数据，不需要装扩展）
@@ -139,7 +154,7 @@ python -m http.server 8765 --bind 127.0.0.1
 manifest.json      扩展清单
 background.js      打开侧边栏
 content.js         在 x.com 页面里发 REST 请求（无 ES module）
-lib/core.js        纯逻辑：分类 / diff / CSV（不依赖 chrome，可单测）
+lib/core.js        纯逻辑：分类 / 互动排行 / 沉默分档 / diff / CSV（不依赖 chrome，可单测）
 lib/db.js          IndexedDB 快照存储
 sidepanel/         侧边栏 UI
 dev/               本地预览用，打包时排除
@@ -156,7 +171,7 @@ python - <<'PY'
 import zipfile, pathlib
 root = pathlib.Path(".")
 skip = {"dev", "tests", "dist", "node_modules", ".git"}
-with zipfile.ZipFile("dist/x-mutual-check-0.3.0.zip", "w", zipfile.ZIP_DEFLATED) as z:
+with zipfile.ZipFile("dist/x-mutual-check-0.4.0.zip", "w", zipfile.ZIP_DEFLATED) as z:
     for p in root.rglob("*"):
         if p.is_dir() or p.suffix == ".zip" or p.suffix == ".md":
             continue

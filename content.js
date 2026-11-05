@@ -13,9 +13,19 @@
     following: "/i/api/1.1/friends/following/list.json",
     followers: "/i/api/1.1/followers/list.json",
   };
+  const NOTIF_PATH = "/i/api/2/notifications/all.json";
+  const NOTIF_PARAMS = [
+    "include_mention_filter=true",
+    "include_nsfw_user_flag=false",
+    "include_nsfw_admin_flag=false",
+    "include_ranked_timeline=true",
+    "include_alerter_filter=true",
+  ].join("&");
   const FOLLOW_PATH = "/i/api/1.1/friendships/create.json";
   const UNFOLLOW_PATH = "/i/api/1.1/friendships/destroy.json";
   const SHOW_PATH = "/i/api/1.1/friendships/show.json";
+  // 注意：这里没有 skip_status。带上 status 才能拿到每个人的最后一条推文时间（沉默号要用），
+  // 代价是响应体积约为原来的 3 倍（实测 524 人 ≈ 1.7MB）。不需要时用 withStatus:false 换回来。
   const COMMON_PARAMS = [
     "include_profile_interstitial_type=1",
     "include_blocking=1",
@@ -28,7 +38,6 @@
     "include_ext_is_blue_verified=1",
     "include_ext_verified_type=1",
     "include_ext_profile_image_shape=1",
-    "skip_status=1",
   ].join("&");
   const PUBLIC_BEARER =
     "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
@@ -59,9 +68,34 @@
     return m ? m[1] : null;
   }
 
-  function buildUrl(kind, userId, cursor, count) {
+  function buildUrl(kind, userId, cursor, count, withStatus) {
     const path = API_PATH[kind];
-    return `${path}?${COMMON_PARAMS}&user_id=${userId}&count=${count}&cursor=${encodeURIComponent(cursor)}`;
+    const extra = withStatus === false ? "&skip_status=1" : "";
+    return `${path}?${COMMON_PARAMS}${extra}&user_id=${userId}&count=${count}&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  function buildNotifUrl(cursor, count) {
+    const c = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+    return `${NOTIF_PATH}?${NOTIF_PARAMS}&count=${count}${c}`;
+  }
+
+  /** 通知里的 user 只留 UI 要用的字段，字段名保持接口原名，交给 panel 的 normalizeUser 处理。 */
+  function pickUser(u) {
+    if (!u) return null;
+    return {
+      id_str: u.id_str || (u.id !== undefined ? String(u.id) : ""),
+      screen_name: u.screen_name || "",
+      name: u.name || "",
+      description: u.description || "",
+      profile_image_url_https: u.profile_image_url_https || u.profile_image_url || "",
+      followers_count: u.followers_count || 0,
+      friends_count: u.friends_count || 0,
+      statuses_count: u.statuses_count || 0,
+      ext_is_blue_verified: !!u.ext_is_blue_verified,
+      verified: !!u.verified,
+      following: !!u.following,
+      followed_by: !!u.followed_by,
+    };
   }
 
   function emit(msg) {
@@ -70,7 +104,7 @@
     } catch (e) {}
   }
 
-  async function scan({ kind, userId, jobId, count = 200, delayMs = 1200, maxPages = 60 }) {
+  async function scan({ kind, userId, jobId, count = 200, delayMs = 1200, maxPages = 60, withStatus = true }) {
     const ct0 = readCookie("ct0");
     if (!ct0) throw new Error("NO_LOGIN");
     const uid = userId || viewerId();
@@ -86,7 +120,7 @@
 
     while (pages < maxPages) {
       if (abortFlag) throw new Error("ABORTED");
-      const res = await fetch(buildUrl(kind, uid, cursor, count), {
+      const res = await fetch(buildUrl(kind, uid, cursor, count, withStatus), {
         headers,
         credentials: "include",
       });
@@ -115,6 +149,97 @@
     }
 
     return { users, pages, totalCount };
+  }
+
+  /**
+   * 扫通知流，抽「谁跟我互动过」。
+   *
+   * 通知条目长这样：entry.content.item.{content, clientEventInfo}
+   *   - item.clientEventInfo.element → 动作类型（users_followed_you / user_replied_to_your_tweet …）
+   *   - item.content.notification.fromUsers → 一批 uid（关注/点赞/转发这类）
+   *   - item.content.tweet.id → 回复这类只有推文 id，要回 globalObjects.tweets 查 user_id_str
+   * 实测 27/27 条回复都能反查到人，没有漏的。
+   *
+   * 只能翻到有限历史（实测 371 条 / 26 天），翻到底 next_cursor 就没了，属正常结束。
+   */
+  async function scanInteractions({ jobId, count = 40, delayMs = 900, maxPages = 12 }) {
+    const ct0 = readCookie("ct0");
+    if (!ct0) throw new Error("NO_LOGIN");
+
+    const headers = { authorization: "Bearer " + PUBLIC_BEARER, "x-csrf-token": ct0 };
+    const records = [];
+    const users = {};
+    let cursor = null;
+    let pages = 0;
+    let retries = 0;
+    let unresolved = 0;
+    abortFlag = false;
+
+    while (pages < maxPages) {
+      if (abortFlag) throw new Error("ABORTED");
+      const res = await fetch(buildNotifUrl(cursor, count), { headers, credentials: "include" });
+
+      if (res.status === 429 || res.status === 503) {
+        if (retries >= 3) throw new Error("RATE_LIMITED");
+        retries++;
+        emit({ type: "PROGRESS", jobId, kind: "interactions", phase: "backoff", pages, loaded: records.length, retries });
+        await sleep(4000 * retries);
+        continue;
+      }
+      // 400 一般是 count 传大了（上限 40），别当成登录问题
+      if (res.status === 400) throw new Error("BAD_REQUEST");
+      if (!res.ok) throw new Error("HTTP_" + res.status);
+      retries = 0;
+
+      const data = await res.json();
+      const go = data.globalObjects || {};
+      for (const [id, u] of Object.entries(go.users || {})) users[id] = pickUser(u);
+
+      const instr = (data.timeline && data.timeline.instructions) || [];
+      const entries = [];
+      for (const i of instr) {
+        const add = Array.isArray(i.addEntries) ? i.addEntries : (i.addEntries && i.addEntries.entries) || null;
+        if (add) entries.push(...add);
+      }
+
+      let next = null;
+      let got = 0;
+      for (const e of entries) {
+        if (!e.entryId) continue;
+        if (e.entryId.startsWith("cursor-bottom")) {
+          const c = e.content || {};
+          next = (c.operation && c.operation.cursor && c.operation.cursor.value) || c.value || null;
+          continue;
+        }
+        if (!e.entryId.startsWith("notification-")) continue;
+
+        const item = (e.content && e.content.item) || {};
+        const content = item.content || {};
+        const el = (item.clientEventInfo && item.clientEventInfo.element) || "unknown";
+        const ts = Number(e.sortIndex) || 0;
+
+        let ids = [];
+        if (content.notification && Array.isArray(content.notification.fromUsers)) {
+          ids = content.notification.fromUsers.map(String);
+        }
+        if (!ids.length && content.tweet && content.tweet.id) {
+          const t = (go.tweets || {})[content.tweet.id];
+          const uid = t && (t.user_id_str || (t.user && t.user.id_str));
+          if (uid) ids = [String(uid)];
+          else unresolved++;
+        }
+        for (const uid of ids) records.push({ uid, ts, el });
+        got++;
+      }
+
+      pages++;
+      emit({ type: "PROGRESS", jobId, kind: "interactions", phase: "page", pages, loaded: records.length, totalCount: null });
+      if (!next || next === cursor || got === 0) break;
+      cursor = next;
+      await sleep(delayMs);
+    }
+
+    return { records, users, pages, unresolved };
   }
 
   /**
@@ -247,6 +372,13 @@
 
     if (msg.type === "SCAN") {
       scan(msg)
+        .then((r) => sendResponse({ ok: true, ...r }))
+        .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
+      return true;
+    }
+
+    if (msg.type === "SCAN_INTERACTIONS") {
+      scanInteractions(msg)
         .then((r) => sendResponse({ ok: true, ...r }))
         .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
       return true;

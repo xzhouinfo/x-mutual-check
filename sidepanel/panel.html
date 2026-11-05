@@ -24,6 +24,7 @@
     </label>
     <div class="row">
       <button id="scanBtn" class="primary" disabled>开始扫描</button>
+      <button id="intelBtn" class="ghost" disabled title="读通知流，统计最近谁跟你互动最多">扫互动</button>
       <button id="stopBtn" class="ghost" hidden>停止</button>
     </div>
     <div id="progress" class="progress" hidden>
@@ -40,14 +41,25 @@
     <div class="stat warn clickable" id="cardNotBackBlue" title="点击：只看未回关的蓝V">
       <b id="stNotBackBlue">-</b><span>未回关蓝V ›</span>
     </div>
+    <div class="stat warn clickable" id="cardNotBackNon" title="点击：只看未回关、没有蓝V的">
+      <b id="stNotBackNon">-</b><span>未回关非V ›</span>
+    </div>
     <div class="stat"><b id="stPure">-</b><span>纯粉丝</span></div>
     <div class="stat extra"><b id="stRate">-</b><span>互关率</span></div>
+    <div class="stat clickable" id="cardStale" title="点击：半年以上没发帖的人">
+      <b id="stStale">-</b><span>半年未更 ›</span>
+    </div>
+    <div class="stat clickable" id="cardZero" title="点击：一条推文都没发过的号">
+      <b id="stZero">-</b><span>零推文 ›</span>
+    </div>
   </section>
 
   <nav class="tabs" id="tabs" hidden>
     <button data-tab="notBack" class="active">未回关 <em>0</em></button>
     <button data-tab="mutual">互关 <em>0</em></button>
     <button data-tab="pureFans">纯粉丝 <em>0</em></button>
+    <button data-tab="interact">互动 <em>0</em></button>
+    <button data-tab="stale">沉默 <em>0</em></button>
     <button data-tab="changes">变化 <em>0</em></button>
   </nav>
 
@@ -56,10 +68,16 @@
     <select id="sortBy" class="mini-select" title="排序方式">
       <option value="weight">影响力</option>
       <option value="tracked">跟踪最久</option>
+      <option value="stale">最久没更新</option>
+      <option value="score">互动分</option>
+      <option value="count">互动次数</option>
+      <option value="recent">最近互动</option>
     </select>
-    <button id="blueOnly" class="chip" aria-pressed="false" title="只显示蓝V认证账号">蓝V</button>
+    <button id="blueOnly" class="chip" aria-pressed="false" title="点一下只看蓝V，再点只看非蓝V">蓝V</button>
     <button id="exportBtn" class="ghost">导出</button>
   </section>
+
+  <nav class="chips" id="staleChips" hidden></nav>
 
   <main id="list" class="list">
     <div class="empty">

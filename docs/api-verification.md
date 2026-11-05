@@ -124,3 +124,105 @@ GraphQL 的 `Following` 响应里，user 对象是精简版，**没有 `followed
 1. MV3 插件骨架（Side Panel + 扫描 + 三档筛选 + CSV 导出）
 2. 快照 diff（掉粉监控、新增未回关）
 3. 上架材料（隐私说明、权限说明、截图）
+
+---
+
+# 附：v0.4.0 新增需求的数据源验证（2026-11-05 晚）
+
+三个新需求对应的接口，同样在真实登录态下验证过：互动排行榜、非蓝V 分类、沉默号。
+
+## 九、`status.created_at`：沉默号的数据来源
+
+关注/粉丝列表默认带 `skip_status=1`，用户对象里就没有 `status`。去掉这个参数后：
+
+```
+user.status.created_at   // 最后一条推文时间，例："Thu Nov 05 13:01:55 +0000 2026"
+user.statuses_count      // 总发帖数，0 表示零推文号
+```
+
+实测一个 524 关注的账号：
+
+| 项 | 数值 |
+|---|---|
+| 能拿到 `status.created_at` | 523 / 524 |
+| 零推文（`statuses_count=0`、无 status） | 1 |
+| 响应体积 | 1748 KB / 3 页（比 `skip_status=1` 大约 3 倍） |
+| 耗时 | 8.4 s（3 页，含 300ms 间隔） |
+
+结论：可靠，直接本地算天数分档即可，不需要额外接口。
+
+## 十、互动排行榜：只有 v2 通知流可用
+
+四个候选数据源，前三个全部不可用：
+
+| 候选 | 结果 |
+|---|---|
+| `GET /i/api/1.1/statuses/user_timeline.json` | 200，**body 为空**（0 字节）→ 拿不到「我回复了谁」 |
+| `GET /i/api/1.1/statuses/mentions_timeline.json` | 200，**body 为空** |
+| `GET /i/api/1.1/favorites/list.json` | **404**，`{"code":34,"message":"Sorry, that page does not exist"}` |
+| `GET /i/api/2/notifications/all.json` | **200，可用** |
+
+### 10.1 请求
+
+```
+GET /i/api/2/notifications/all.json
+    ?include_mention_filter=true&include_nsfw_user_flag=false&include_nsfw_admin_flag=false
+    &include_ranked_timeline=true&include_alerter_filter=true
+    &count=40[&cursor=<上一页的 bottom cursor>]
+```
+
+- `count` 上限 **40**，传 `100` 直接 **400**
+- 响应约 100 KB/页，结构是老的 `globalObjects` + `timeline.instructions` 那套
+- 鉴权与关注列表一致：`authorization: Bearer <公开 bearer>` + `x-csrf-token: <ct0>`
+
+### 10.2 结构
+
+```
+timeline.instructions[].addEntries.entries[]
+  entryId: "notification-<id>"
+  sortIndex: 毫秒时间戳
+  content.item.clientEventInfo.element   ← 动作类型
+  content.item.content.notification.fromUsers: ["<uid>", ...]   ← 关注/点赞/转发这类
+  content.item.content.tweet.id          ← 回复这类只给推文 id
+globalObjects.users[uid]                 ← 用户对象（含 ext_is_blue_verified / followed_by）
+globalObjects.tweets[tweetId].user_id_str ← 回复类靠它反查是谁
+```
+
+`addEntries` 的形态在不同版本里变过：可能是数组，也可能是 `{ entries: [...] }`，两种都要兼容。
+
+### 10.3 动作类型（`clientEventInfo.element`）
+
+| element | 含义 | 本项目权重 |
+|---|---|---|
+| `user_replied_to_your_tweet` | 回复你 | 3 |
+| `user_mentioned_you` | @你 | 3 |
+| `users_retweeted_your_tweet` | 转发你 | 3 |
+| `users_liked_your_tweet` | 点赞你 | 1 |
+| `user_liked_multiple_tweets` | 一次点了你多条 | 2 |
+| `users_followed_you` | 关注你 | 2 |
+| 未识别的新类型 | —— | 1（落到「其他」，不丢人） |
+
+页面上的文案（`richMessage` / `message.text`）是本地化的，**不要按文案判断类型**，只认 element。
+
+### 10.4 回复类通知的反查验证
+
+一条样本里 27 条 `user_replied_to_your_tweet` 通知，全部能通过 `globalObjects.tweets[id].user_id_str` 反查到是谁，**0 条失败**，且这些人都在 `globalObjects.users` 里。
+
+### 10.5 回溯深度（重要边界）
+
+分批翻页实测（每页 40 条）：
+
+| 页数 | 累计通知 | 最早时间 |
+|---|---|---|
+| 4 | 159 | 2026-11-05 |
+| 8 | 317 | 2026-11-04 |
+| 11 | 371 | 2026-10-10 → 到底 |
+
+- 第 11 页后 `cursor-bottom` 不再返回，**没有更多历史**
+- 该账号覆盖 **26.2 天 / 371 条**
+- 所以排行榜的语义只能是「最近这段时间谁跟你互动最多」，UI 必须显示覆盖范围，不能说成累计
+
+### 10.6 一处容易踩的精度坑（在 mock 里真踩到了）
+
+用户 id 必须用 `id_str`。本地预览的假数据里写成 `String(1700000000000000000 + i)`，超过 2^53 后所有 id 撞成同一个字符串，
+结果整张排行榜塌缩成 1 个人、分数把所有记录加在一起。这与 README 里 `id` 丢精度那条是同一个坑，写假数据时同样适用。

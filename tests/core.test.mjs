@@ -16,6 +16,20 @@ import {
   WRITE_PATH,
   COMMON_PARAMS,
   PUBLIC_BEARER,
+  buildNotifUrl,
+  NOTIF_PATH,
+  kindOf,
+  buildInteractionRank,
+  interactionSummary,
+  sortByScore,
+  sortByInteractions,
+  sortByRecentInteraction,
+  toInteractionCsv,
+  staleDays,
+  filterStale,
+  staleStats,
+  sortByStale,
+  STALE_BUCKETS,
 } from "../lib/core.js";
 
 const raw = (sn, extra = {}) => ({
@@ -322,4 +336,184 @@ test("端到端：模拟实测账号数据（351 关注 / 420 粉丝 / 100% 互�
   assert.equal(r.stats.notBack, 0);
   assert.equal(r.stats.pureFans, 69);
   assert.equal(r.stats.mutualRate, 100);
+});
+
+/* ==================== v0.4.0 新增：互动 / 沉默号 / 非蓝V ==================== */
+
+const DAY = 86400000;
+const NOW = Date.UTC(2026, 10, 5, 12, 0, 0);
+
+test("buildUrl 默认带 status（沉默号要用），可选关掉换体积", () => {
+  const withStatus = buildUrl("following", "1");
+  assert.ok(!withStatus.includes("skip_status"));
+
+  const lite = buildUrl("following", "1", "-1", 200, { withStatus: false });
+  assert.ok(lite.includes("skip_status=1"));
+  assert.equal(lite.split("&").length, COMMON_PARAMS.split("&").length + 4);
+});
+
+test("normalizeUser 读 status.created_at 当最后发帖时间", () => {
+  const u = normalizeUser(
+    raw("alice", { status: { created_at: "Thu Nov 05 13:01:55 +0000 2026" } })
+  );
+  assert.equal(u.lastTweetAt, Date.parse("Thu Nov 05 13:01:55 +0000 2026"));
+  assert.equal(u.noTweets, false);
+
+  // 从快照读回来：字段已经归一化过，不能再解析 status
+  assert.equal(normalizeUser({ sn: "b", lastTweetAt: 123, tweets: 5 }).lastTweetAt, 123);
+
+  // 零推文号：没 status，也没发过帖
+  const zero = normalizeUser(raw("zero", { statuses_count: 0 }));
+  assert.equal(zero.lastTweetAt, null);
+  assert.equal(zero.noTweets, true);
+});
+
+test("kindOf：认识的类型给权重，认不出的落到「其他」而不是丢掉", () => {
+  assert.equal(kindOf("users_liked_your_tweet").key, "like");
+  assert.equal(kindOf("users_liked_your_tweet").weight, 1);
+  assert.equal(kindOf("user_replied_to_your_tweet").weight, 3);
+  assert.equal(kindOf("user_liked_multiple_tweets").weight, 2);
+  assert.equal(kindOf("something_new_x").key, "other");
+});
+
+test("buildInteractionRank：按人累加，权重正确，同一条通知里多人都算", () => {
+  const users = {
+    "1": raw("alice", { ext_is_blue_verified: true, followers_count: 5000 }),
+    "2": raw("bob"),
+  };
+  const records = [
+    { uid: "1", ts: NOW - 1 * DAY, el: "users_liked_your_tweet" }, // 1
+    { uid: "1", ts: NOW - 2 * DAY, el: "user_replied_to_your_tweet" }, // 3
+    { uid: "1", ts: NOW - 3 * DAY, el: "users_liked_your_tweet" }, // 1
+    { uid: "2", ts: NOW - 1 * DAY, el: "users_followed_you" }, // 2
+    { uid: "2", ts: NOW - 4 * DAY, el: "brand_new_element" }, // 1（未知类型）
+  ];
+  const rank = buildInteractionRank(records, users);
+  assert.equal(rank.length, 2);
+
+  const alice = rank.find((r) => r.sn === "alice");
+  assert.equal(alice.score, 5);
+  assert.equal(alice.count, 3);
+  assert.deepEqual(alice.kinds, { like: 2, reply: 1 });
+  assert.equal(alice.lastAt, NOW - 1 * DAY);
+  assert.equal(alice.verified, true);
+
+  const bob = rank.find((r) => r.sn === "bob");
+  assert.equal(bob.score, 3);
+  assert.deepEqual(bob.kinds, { follow: 1, other: 1 });
+});
+
+test("buildInteractionRank：用户表缺人也不丢记录", () => {
+  const rank = buildInteractionRank([{ uid: "999", ts: NOW, el: "users_liked_your_tweet" }], {});
+  assert.equal(rank.length, 1);
+  assert.equal(rank[0].id, "999");
+  assert.equal(rank[0].score, 1);
+  assert.equal(rank[0].sn, "");
+});
+
+test("三种排序：加权分 / 条数 / 最近互动", () => {
+  const rows = [
+    { sn: "a", score: 3, count: 1, lastAt: 100 },
+    { sn: "b", score: 9, count: 3, lastAt: 50 },
+    { sn: "c", score: 2, count: 5, lastAt: 300 },
+  ];
+  assert.deepEqual(sortByScore(rows).map((r) => r.sn), ["b", "a", "c"]);
+  assert.deepEqual(sortByInteractions(rows).map((r) => r.sn), ["c", "b", "a"]);
+  assert.deepEqual(sortByRecentInteraction(rows).map((r) => r.sn), ["c", "a", "b"]);
+});
+
+test("interactionSummary：覆盖天数 / 人数 / 条数", () => {
+  const s = interactionSummary([
+    { uid: "1", ts: NOW - 10 * DAY },
+    { uid: "1", ts: NOW },
+    { uid: "2", ts: NOW - 5 * DAY },
+  ]);
+  assert.equal(s.events, 3);
+  assert.equal(s.users, 2);
+  assert.equal(s.days, 10);
+  assert.equal(interactionSummary([]).days, null);
+});
+
+test("filterRows 支持 blueMode 三态：全部 / 蓝V / 非蓝V", () => {
+  const rows = [
+    { sn: "a", verified: true, followers: 10 },
+    { sn: "b", verified: false, followers: 10 },
+  ];
+  assert.equal(filterRows(rows, {}).length, 2);
+  assert.equal(filterRows(rows, { blueMode: "blue" }).length, 1);
+  assert.deepEqual(filterRows(rows, { blueMode: "nonblue" }).map((r) => r.sn), ["b"]);
+  // 旧参数仍兼容
+  assert.equal(filterRows(rows, { onlyBlue: true }).length, 1);
+});
+
+test("staleDays / filterStale：分档是累加的，零推文单独一档", () => {
+  const rows = [
+    { sn: "d10", lastTweetAt: NOW - 10 * DAY, tweets: 100 },
+    { sn: "d40", lastTweetAt: NOW - 40 * DAY, tweets: 100 },
+    { sn: "d100", lastTweetAt: NOW - 100 * DAY, tweets: 100 },
+    { sn: "d200", lastTweetAt: NOW - 200 * DAY, tweets: 100 },
+    { sn: "d400", lastTweetAt: NOW - 400 * DAY, tweets: 100 },
+    { sn: "zero", lastTweetAt: null, tweets: 0 },
+  ];
+  assert.equal(staleDays(rows[1], NOW), 40);
+  assert.equal(staleDays(rows[5], NOW), null);
+
+  assert.deepEqual(filterStale(rows, "d30", NOW).map((r) => r.sn), ["d40", "d100", "d200", "d400"]);
+  assert.deepEqual(filterStale(rows, "d180", NOW).map((r) => r.sn), ["d200", "d400"]);
+  assert.deepEqual(filterStale(rows, "none", NOW).map((r) => r.sn), ["zero"]);
+  assert.equal(filterStale(rows, "all", NOW).length, 6);
+});
+
+test("staleStats：桶是累加的，known 只算拿到发帖时间的", () => {
+  const rows = [
+    { lastTweetAt: NOW - 40 * DAY, tweets: 5 },
+    { lastTweetAt: NOW - 200 * DAY, tweets: 5 },
+    { lastTweetAt: null, tweets: 0 },
+  ];
+  const s = staleStats(rows, NOW);
+  assert.equal(s.d30, 2);
+  assert.equal(s.d90, 1);
+  assert.equal(s.d180, 1);
+  assert.equal(s.d365, 0);
+  assert.equal(s.none, 1);
+  assert.equal(s.known, 2);
+});
+
+test("sortByStale：最久没发的排前面，零推文号垫后", () => {
+  const rows = [
+    { sn: "zero", lastTweetAt: null, tweets: 0 },
+    { sn: "d40", lastTweetAt: NOW - 40 * DAY, tweets: 9 },
+    { sn: "d400", lastTweetAt: NOW - 400 * DAY, tweets: 9 },
+  ];
+  assert.deepEqual(sortByStale(rows, NOW).map((r) => r.sn), ["d400", "d40", "zero"]);
+});
+
+test("导出：普通列表带最后发帖列，互动榜单独一套表头", () => {
+  const csv = toCsv([{ sn: "a", name: "A", followers: 1, friends: 1, tweets: 2, verified: false, lastTweetAt: NOW - 40 * DAY }], {
+    now: NOW,
+  });
+  assert.ok(csv.startsWith("\uFEFF"));
+  assert.ok(csv.includes("最后发帖"));
+  assert.ok(csv.includes("未更新天数"));
+  assert.ok(csv.includes("2026-09-26"));
+  assert.ok(csv.includes(",40,"));
+
+  const intel = toInteractionCsv([
+    { sn: "b", name: "B", score: 5, count: 3, kinds: { reply: 1, like: 2 }, lastAt: NOW, verified: true, followers: 9 },
+  ]);
+  assert.ok(intel.startsWith("\uFEFF"));
+  assert.ok(intel.includes("加权分"));
+  assert.ok(intel.includes("回复,点赞"));
+  assert.equal(intel.trim().split("\r\n").length, 2);
+});
+
+test("buildNotifUrl：count 上限 40，cursor 可选", () => {
+  const u1 = buildNotifUrl();
+  assert.ok(u1.startsWith(NOTIF_PATH + "?"));
+  assert.ok(u1.includes("count=40"));
+  assert.ok(!u1.includes("cursor="));
+  const u2 = buildNotifUrl("abc&d", 40);
+  assert.ok(u2.includes("cursor=abc%26d"));
+  assert.equal(STALE_BUCKETS.length, 5);
+  assert.equal(STALE_BUCKETS.at(-1).key, "none");
 });

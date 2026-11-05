@@ -8,11 +8,17 @@
     "Lookonchain", "SpotOnChain", "EmberCN", "余烬", "0xSun", "CryptoHayes",
   ];
 
+  // 最后发帖时间的几种典型情况：正常活跃 / 沉默半年 / 沉默一年半 / 零推文
+  const AGE_DAYS = [3, 12, 45, 200, 420, 30, 95, 730];
+
   function makeUser(i, followedBy) {
     const name = firstNames[i % firstNames.length] + (i > 29 ? " " + (i - 29) : "");
     const sn = ["bitcoinzhang", "cryptolily", "web3view", "chainnote", "btcakang"][i % 5] + i;
+    const zeroTweets = i % 11 === 9;
+    const age = AGE_DAYS[i % AGE_DAYS.length];
     return {
-      id_str: String(1700000000000000000 + i),
+      // 用字符串拼，别写 String(1700000000000000000 + i)：超过 2^53 全部撞成同一个 id
+      id_str: "17000000000000" + String(i).padStart(5, "0"),
       screen_name: sn,
       name,
       description: i % 3 === 0 ? "深度分析｜链上数据｜宏观经济｜偶尔聊聊 AI 和产品设计，欢迎交流" : "关注 Web3 与科技，理性讨论。",
@@ -23,8 +29,9 @@
         ),
       followers_count: [123400, 8800, 45600, 1290, 234000, 5600][i % 6],
       friends_count: 500 + i,
-      statuses_count: 3000 + i,
+      statuses_count: zeroTweets ? 0 : 3000 + i,
       created_at: "Wed Oct 10 20:19:24 +0000 2018",
+      status: zeroTweets ? undefined : { created_at: new Date(Date.now() - age * 86400000).toUTCString() },
       ext_is_blue_verified: i % 4 === 0,
       protected: false,
       following: true,
@@ -62,6 +69,45 @@
               }, p * 400);
             }
             setTimeout(() => cb({ ok: true, users, pages: 2 }), 1200);
+          } else if (msg.type === "SCAN_INTERACTIONS") {
+            const kinds = [
+              "users_liked_your_tweet",
+              "user_replied_to_your_tweet",
+              "users_followed_you",
+              "user_liked_multiple_tweets",
+              "users_retweeted_your_tweet",
+              "user_mentioned_you",
+              "some_unknown_element",
+            ];
+            const records = [];
+            const users = {};
+            for (let i = 0; i < following.length; i++) {
+              const u = following[i];
+              const times = (i * 7) % 9;
+              if (times === 0) continue;
+              users[u.id_str] = u;
+              for (let k = 0; k < times; k++) {
+                records.push({
+                  uid: u.id_str,
+                  ts: Date.now() - (((i * 3 + k) % 26) + 1) * 86400000,
+                  el: kinds[(i + k) % kinds.length],
+                });
+              }
+            }
+            for (let i = 0; i < 6; i++) {
+              const u = followers[followers.length - 1 - i];
+              if (!u) continue;
+              users[u.id_str] = u;
+              records.push({ uid: u.id_str, ts: Date.now() - (i + 1) * 86400000, el: "users_liked_your_tweet" });
+            }
+            for (let p = 1; p <= 3; p++) {
+              setTimeout(() => {
+                window.chrome.runtime._listeners.forEach((fn) =>
+                  fn({ type: "PROGRESS", kind: "interactions", phase: "page", pages: p, loaded: Math.round((records.length * p) / 3) })
+                );
+              }, p * 300);
+            }
+            setTimeout(() => cb({ ok: true, records, users, pages: 3, unresolved: 0 }), 1000);
           } else if (msg.type === "FOLLOW") {
             (window.__mockFollows ||= []).push({ userId: msg.userId, sn: msg.screenName });
             // 尾部是 3 的 handle 模拟失败；尾部是 7 的模拟「状态没核对上」
