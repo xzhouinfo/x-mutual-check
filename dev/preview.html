@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>X 互关检测 · 本地预览</title>
+  <link rel="stylesheet" href="../sidepanel/panel.css" />
+  <style>
+    html, body { width: 400px; height: 780px; }
+  </style>
+</head>
+<body>
+  <div id="mount"></div>
+  <script src="mock-chrome.js"></script>
+  <script type="module">
+    const html = await (await fetch("../sidepanel/panel.html")).text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const mount = document.getElementById("mount");
+    mount.innerHTML = doc.body.innerHTML;
+    mount.querySelectorAll("script").forEach((s) => s.remove());
+    await import("../sidepanel/panel.js");
+  </script>
+</body>
+</html>

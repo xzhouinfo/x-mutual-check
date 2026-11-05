@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "X 互关检测",
+  "version": "0.3.0",
+  "description": "一键检查 X（Twitter）的互关 / 未回关 / 纯粉丝，可只看未回关的蓝V，并在列表里单条回关或取关。所有数据只在本地处理。",
+  "minimum_chrome_version": "116",
+  "permissions": ["sidePanel", "storage", "scripting"],
+  "host_permissions": ["https://x.com/*", "https://twitter.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "X 互关检测"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/panel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

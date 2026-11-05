@@ -1,0 +1,13 @@
+# 打包产物
+dist/
+
+# 本地预览截图（开发时生成，不入库）
+dev/shot-*.png
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+node_modules/
+*.log

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>X 互关检测</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="../icons/icon48.png" alt="" class="logo" />
+      <div class="brand-text">
+        <h1>X 互关检测</h1>
+        <p id="account" class="muted">正在检测页面…</p>
+      </div>
+    </div>
+    <button id="recheck" class="icon-btn" title="重新检测页面状态">⟳</button>
+  </header>
+
+  <section class="scan-box">
+    <label class="opt">
+      <input type="checkbox" id="withFollowers" checked />
+      <span>同时拉取粉丝列表<small>（统计纯粉丝 / 掉粉，页数翻倍）</small></span>
+    </label>
+    <div class="row">
+      <button id="scanBtn" class="primary" disabled>开始扫描</button>
+      <button id="stopBtn" class="ghost" hidden>停止</button>
+    </div>
+    <div id="progress" class="progress" hidden>
+      <div class="bar"><span id="barFill"></span></div>
+      <p id="progressText" class="muted small"></p>
+    </div>
+    <p id="hint" class="hint"></p>
+  </section>
+
+  <section class="stats" id="stats" hidden>
+    <div class="stat"><b id="stFollowing">-</b><span>关注</span></div>
+    <div class="stat ok"><b id="stMutual">-</b><span>互关</span></div>
+    <div class="stat warn"><b id="stNotBack">-</b><span>未回关</span></div>
+    <div class="stat warn clickable" id="cardNotBackBlue" title="点击：只看未回关的蓝V">
+      <b id="stNotBackBlue">-</b><span>未回关蓝V ›</span>
+    </div>
+    <div class="stat"><b id="stPure">-</b><span>纯粉丝</span></div>
+    <div class="stat extra"><b id="stRate">-</b><span>互关率</span></div>
+  </section>
+
+  <nav class="tabs" id="tabs" hidden>
+    <button data-tab="notBack" class="active">未回关 <em>0</em></button>
+    <button data-tab="mutual">互关 <em>0</em></button>
+    <button data-tab="pureFans">纯粉丝 <em>0</em></button>
+    <button data-tab="changes">变化 <em>0</em></button>
+  </nav>
+
+  <section class="toolbar" id="toolbar" hidden>
+    <input id="search" type="search" placeholder="搜索昵称 / @用户名 / 简介" />
+    <select id="sortBy" class="mini-select" title="排序方式">
+      <option value="weight">影响力</option>
+      <option value="tracked">跟踪最久</option>
+    </select>
+    <button id="blueOnly" class="chip" aria-pressed="false" title="只显示蓝V认证账号">蓝V</button>
+    <button id="exportBtn" class="ghost">导出</button>
+  </section>
+
+  <main id="list" class="list">
+    <div class="empty">
+      <p>点「开始扫描」读取你的关注列表。</p>
+      <p class="muted small">只读取公开数据，不上传任何内容。</p>
+    </div>
+  </main>
+
+  <footer class="footer" id="footer"></footer>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>
