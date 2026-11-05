@@ -180,7 +180,7 @@
 
       let res = null;
       let ok = false;
-      for (let attempt = 0; attempt < 5; attempt++) {
+      for (let attempt = 0; attempt < 6; attempt++) {
         res = await fetch(url, { headers, credentials: "include" });
         if (res.status === 200) {
           ok = true;
@@ -188,11 +188,13 @@
         }
         if (res.status === 429 || res.status === 503) {
           emit({ type: "PROGRESS", jobId, kind, phase: "backoff", pages, loaded: users.length, retries: attempt + 1 });
-          await sleep(4000 * (attempt + 1));
+          await sleep(6000 * (attempt + 1));
           continue;
         }
         if (res.status === 404 || res.status >= 500) {
-          await sleep(400 + attempt * 500);
+          // 404 密集出现通常是被限流的前兆，等一下再试，别把它当「没有下一页」
+          emit({ type: "PROGRESS", jobId, kind, phase: "backoff", pages, loaded: users.length, retries: attempt + 1 });
+          await sleep(1200 * (attempt + 1));
           continue;
         }
         throw new Error("HTTP_" + res.status);

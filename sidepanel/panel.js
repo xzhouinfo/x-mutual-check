@@ -247,6 +247,7 @@ async function startScan() {
     state.statusCovered = fol.statusCovered || 0;
 
     let fans = null;
+    let fansError = null;
     if (withFans) {
       state.prog.stage = 2;
       state.prog.pages = 0;
@@ -254,9 +255,10 @@ async function startScan() {
       state.prog.totalCount = null;
       updateProgress({ kind: "followers" });
       const f = await sendTab(tab.id, { type: "SCAN", kind: "followers", userId, jobId });
+      // 粉丝列表只是补充（纯粉丝、掉粉、互关率）。它失败了也不能把已经扫好的关注侧数据丢掉：
+      // 关注上千时要翻几十页，正好容易撞上 X 的读限流（表现为先密集 404，再 429）。
       if (f && f.ok) fans = f.users;
-      else if (f && f.error === "RATE_LIMITED") toast("粉丝列表被限流，已跳过（结果仍可用）", 3200);
-      else throw new Error(f ? f.error : "SCAN_FAILED");
+      else fansError = f ? f.error : "SCAN_FAILED";
     }
 
     // 从本地历史里翻出每个人「第一次被记录到」的时间，用来算「已跟踪 N 天仍未回关」
@@ -299,8 +301,16 @@ async function startScan() {
 
     const tip = `扫描完成：关注 ${result.stats.following} · 互关 ${result.stats.mutual} · 未回关 ${result.stats.notBack}`;
     toast(tip, 3000);
-    if (!fans) setHint("本次未拉粉丝列表，所以纯粉丝和掉粉统计为空。", false);
-    else if (state.statusCovered && state.statusCovered < result.stats.following) {
+    if (fansError === "RATE_LIMITED" || fansError === "GQL_404") {
+      setHint(
+        "粉丝列表这次没扫到（X 的读接口限流了，表现是先密集 404 再 429）。关注侧数据已经出来了，可以先看未回关名单；纯粉丝、掉粉和互关率等 10~15 分钟后再扫一次就能补上。",
+        true
+      );
+    } else if (fansError) {
+      setHint("粉丝列表扫描失败（" + fansError + "），先按关注列表出结果。", true);
+    } else if (!fans && !withFans) {
+      setHint("本次未拉粉丝列表，所以纯粉丝和掉粉统计为空。", false);
+    } else if (state.statusCovered && state.statusCovered < result.stats.following) {
       setHint(
         `沉默号只覆盖 ${state.statusCovered}/${result.stats.following} 人：X 只有旧接口带「最后发帖时间」，它最多给约 500 个关注。其余人的最后发帖时间显示为未知，可点「时间未知」档查看。`,
         false

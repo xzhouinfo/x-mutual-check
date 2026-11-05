@@ -190,7 +190,7 @@ python - <<'PY'
 import zipfile, pathlib
 root = pathlib.Path(".")
 skip = {"dev", "tests", "dist", "node_modules", ".git"}
-with zipfile.ZipFile("dist/x-mutual-check-0.5.0.zip", "w", zipfile.ZIP_DEFLATED) as z:
+with zipfile.ZipFile("dist/x-mutual-check-0.5.1.zip", "w", zipfile.ZIP_DEFLATED) as z:
     for p in root.rglob("*"):
         if p.is_dir() or p.suffix == ".zip" or p.suffix == ".md":
             continue
