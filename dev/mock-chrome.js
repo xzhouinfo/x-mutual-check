@@ -60,7 +60,7 @@
           if (msg.type === "PING") {
             cb({ ok: true, loggedIn: true, userId: "1234567890", url: "https://x.com/home" });
           } else if (msg.type === "SCAN") {
-            const users = msg.kind === "following" ? following : followers;
+            const users = (msg.kind === "following" ? following : followers).map((u) => ({ ...u }));
             for (let p = 1; p <= 2; p++) {
               setTimeout(() => {
                 window.chrome.runtime._listeners.forEach((fn) =>
@@ -68,7 +68,22 @@
                 );
               }, p * 400);
             }
-            setTimeout(() => cb({ ok: true, users, pages: 2 }), 1200);
+            // 沉默号补充接口只能覆盖一部分人（真实场景：旧接口只给约 500 个关注）。
+            // 这里让后 40% 的人拿不到最后发帖时间，验证界面会显示「未知」而不是「零推文」。
+            let covered = 0;
+            if (msg.kind === "following") {
+              covered = Math.floor(users.length * 0.6);
+              for (let i = covered; i < users.length; i++) delete users[i].status;
+              setTimeout(() => {
+                window.chrome.runtime._listeners.forEach((fn) =>
+                  fn({ type: "PROGRESS", kind: "following", phase: "status", pages: 1, loaded: covered })
+                );
+              }, 900);
+            }
+            setTimeout(
+              () => cb({ ok: true, users, pages: 2, statusCovered: msg.kind === "following" ? covered : undefined }),
+              1200
+            );
           } else if (msg.type === "SCAN_INTERACTIONS") {
             const kinds = [
               "users_liked_your_tweet",

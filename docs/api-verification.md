@@ -226,3 +226,104 @@ globalObjects.tweets[tweetId].user_id_str ← 回复类靠它反查是谁
 
 用户 id 必须用 `id_str`。本地预览的假数据里写成 `String(1700000000000000000 + i)`，超过 2^53 后所有 id 撞成同一个字符串，
 结果整张排行榜塌缩成 1 个人、分数把所有记录加在一起。这与 README 里 `id` 丢精度那条是同一个坑，写假数据时同样适用。
+
+---
+
+# 附：v0.5.0 —— 为什么必须换成 GraphQL（2026-11-05 晚）
+
+## 十一、REST v1.1 关注列表有硬上限：1406 关注的账号只给 527
+
+有人反馈「扫描出来的数字跟我主页对不上」。主页显示 **1,406 正在关注 / 670 关注者**，
+插件当时扫出来 **524~527 关注**。逐页翻 `friends/following/list.json`（`count=100`，`skip_status=1`）：
+
+| 页 | 返回 | next_cursor_str |
+|---|---|---|
+| 1 | 100 | 2086365520950120448 |
+| 2 | 100 | 1971793307715190784 |
+| 3 | 100 | 1731196841801441280 |
+| 4 | 100 | 1401130195776532482 |
+| 5 | 100 | 590393194 |
+| 6 | **27** | **"0"** ← 结束 |
+
+合计 **527 人**，`hasError: null`，服务端清楚地表示「没有下一页了」。换 `count=200` 结论一致。
+`total_count` 字段存在但值恒为 `null`，接口不告诉你真实总数。
+
+结论：**这个端点最多给约 500 人**，不是分页写错。用它算互关率、未回关名单，会系统性漏掉三分之二的人。
+
+## 十二、GraphQL `Following` / `Followers` 能拿全量
+
+queryId 从页面真实请求里抓（`inject.js` 在 MAIN world 抄下来的就是这两个）：
+
+| 操作 | queryId（2026-11-05） |
+|---|---|
+| `Following` | `QPaR5ONQTW_KyiEXQCHP4g` |
+| `Followers` | `QgDRdL1wGs4vS0mZ0qKHkA` |
+
+请求形态：
+
+```
+GET /i/api/graphql/<qid>/Following
+    ?variables={"userId":"…","count":50,"cursor":"","includePromotedContent":false,"withGrokTranslatedBio":true}
+    &features={…42 个开关，共 2069 字符…}
+```
+
+- 鉴权与 v1.1 相同：`authorization: Bearer <公开 bearer>` + `x-csrf-token: <ct0>`
+- **不需要 `x-client-transaction-id`**。早期判断「GraphQL 必须要 txid」是误判——那次失败的真实原因是 queryId 已经过期
+- 每页固定 **50 人**（`count: 100` 也只返回 50）
+- 全文翻完：关注 **1418 人 / 29 页**（同日再次跑为 1409，主页 1406，差值属主页缓存延迟）
+
+### 12.1 两个会让人静默少数据的坑
+
+**① 随机 404**
+
+同一个 URL 连续发 6 次，结果 `404 / 200 / 404 / 200 / 200 / 404`。这不是 queryId 失效，是纯抖动。
+所以代码里 404 要重试（最多 5 次），**绝不能当成「翻完了」**——否则第一页之后直接停，人少一大半。
+
+**② `TimelineTerminateTimeline` 在第一页就有**
+
+第一页 instructions 的顺序是：
+
+```
+TimelineClearCache
+TimelineTerminateTimeline   ← 这里的含义是「顶部到头」，不是「底部到头」
+TimelineAddEntries
+```
+
+把它当结束条件，扫描会停在第 1 页 50 人。判断结束只能看 bottom cursor：
+空 / 以 `0|` 开头 / 与上一页重复 / 本页没有用户。
+
+### 12.2 新的用户对象结构
+
+GraphQL 返回的用户对象没有 `legacy` 了，字段拆成几块：
+
+```json
+{
+  "rest_id": "…",
+  "core": { "screen_name": "…", "name": "…", "created_at": "…" },
+  "relationship_counts": { "followers": 7273, "following": 6574 },
+  "tweet_counts": { "tweets": 11523, "media_tweets": 570 },
+  "relationship_perspectives": { "followed_by": true, "following": true, "blocking": false, … },
+  "is_blue_verified": true,
+  "verification": { "verified": false },
+  "profile_bio": { "description": "…" },
+  "avatar": { "image_url": "…" },
+  "privacy": { "protected": false }
+}
+```
+
+互关判定用 `relationship_perspectives.followed_by`，蓝V用 `is_blue_verified`，都可用。
+**但没有 `status` 字段** —— 这是沉默号的硬伤，见下一节。
+
+## 十三、`users/lookup.json` 也下线了
+
+想用批量查询给全量用户补最后发帖时间：
+
+```
+GET /i/api/1.1/users/lookup.json?user_id=1,2,3…
+→ 404 {"errors":[{"message":"Sorry, that page does not exist","code":34}]}
+```
+
+所以沉默号没有全量数据源，只能：
+- 全量：用 `tweet_counts.tweets === 0` 判定「零推文」（准确）
+- 部分：用 `following/list.json`（带 `status`）补「最后发帖时间」，覆盖约 500 人
+- 其余：显示「最后发帖时间未知」，单独一档，不假装成死号

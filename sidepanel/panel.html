@@ -65,14 +65,8 @@
 
   <section class="toolbar" id="toolbar" hidden>
     <input id="search" type="search" placeholder="搜索昵称 / @用户名 / 简介" />
-    <select id="sortBy" class="mini-select" title="排序方式">
-      <option value="weight">影响力</option>
-      <option value="tracked">跟踪最久</option>
-      <option value="stale">最久没更新</option>
-      <option value="score">互动分</option>
-      <option value="count">互动次数</option>
-      <option value="recent">最近互动</option>
-    </select>
+    <!-- 选项由 panel.js 的 renderSortOptions() 按当前 tab 生成：每个 tab 只列自己有数据的排序 -->
+    <select id="sortBy" class="mini-select" title="排序方式"></select>
     <button id="blueOnly" class="chip" aria-pressed="false" title="点一下只看蓝V，再点只看非蓝V">蓝V</button>
     <button id="exportBtn" class="ghost">导出</button>
   </section>

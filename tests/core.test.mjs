@@ -517,3 +517,51 @@ test("buildNotifUrl：count 上限 40，cursor 可选", () => {
   assert.equal(STALE_BUCKETS.length, 5);
   assert.equal(STALE_BUCKETS.at(-1).key, "none");
 });
+
+/* ==================== v0.5.0：GraphQL 全量 + 沉默号覆盖边界 ==================== */
+
+test("normalizeUser 接受补充扫描来的 last_tweet_at / status_known", () => {
+  // 补充接口给了真实时间
+  const a = normalizeUser({ sn: "a", tweets: 10, last_tweet_at: 123, status_known: true });
+  assert.equal(a.lastTweetAt, 123);
+  assert.equal(a.statusKnown, true);
+  assert.equal(a.noTweets, false);
+
+  // 补充接口确认是零推文号（last_tweet_at 显式 null）
+  const b = normalizeUser({ sn: "b", tweets: 0, last_tweet_at: null, status_known: true });
+  assert.equal(b.lastTweetAt, null);
+  assert.equal(b.statusKnown, true);
+  assert.equal(b.noTweets, true);
+
+  // 完全没被补充接口覆盖：有推文，但不知道最后发帖时间
+  const c = normalizeUser({ sn: "c", tweets: 50 });
+  assert.equal(c.lastTweetAt, null);
+  assert.equal(c.statusKnown, false);
+  assert.equal(c.noTweets, false);
+});
+
+test("filterStale 的 unknown 档只挑「有推文但时间未知」的人", () => {
+  const rows = [
+    { sn: "known", lastTweetAt: NOW - 400 * DAY, tweets: 100, statusKnown: true },
+    { sn: "unk", lastTweetAt: null, tweets: 500, statusKnown: false },
+    { sn: "zero", lastTweetAt: null, tweets: 0, statusKnown: true },
+  ];
+  assert.deepEqual(filterStale(rows, "unknown", NOW).map((r) => r.sn), ["unk"]);
+  assert.deepEqual(filterStale(rows, "none", NOW).map((r) => r.sn), ["zero"]);
+  assert.deepEqual(filterStale(rows, "d365", NOW).map((r) => r.sn), ["known"]);
+  assert.equal(filterStale(rows, "all", NOW).length, 3);
+});
+
+test("staleStats 把时间未知的人单独计数，不混进「已沉默」", () => {
+  const rows = [
+    { lastTweetAt: NOW - 400 * DAY, tweets: 100 },
+    { lastTweetAt: null, tweets: 500 },
+    { lastTweetAt: null, tweets: 0 },
+  ];
+  const s = staleStats(rows, NOW);
+  assert.equal(s.d365, 1);
+  assert.equal(s.d30, 1);
+  assert.equal(s.unknown, 1);
+  assert.equal(s.none, 1);
+  assert.equal(s.known, 1);
+});

@@ -42,6 +42,23 @@
   const PUBLIC_BEARER =
     "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 
+  /*
+   * 关注/粉丝列表必须走 GraphQL，不能用 REST v1.1。
+   * 实测：friends/following/list.json 翻到第 6 页就给 next_cursor=0，只能拿到 527 人，
+   * 而账号主页显示 1406 —— 老接口有硬上限，用它统计互关必然漏一大半人。
+   * GraphQL 的 Following 能一路翻到 1409 人（29 页 × 50），Followers 同理。
+   *
+   * queryId 是 X 每次发版可能更换的哈希，所以优先用 inject.js 从页面真实请求里抄到的值，
+   * 下面这份只是兜底（2026-11-05 实测有效）。
+   * 另外这两个端点会随机返回 404（同一 URL 交替 200/404，实测 3/6），必须重试。
+   */
+  const GQL_DEFAULT = {
+    following: { qid: "QPaR5ONQTW_KyiEXQCHP4g", op: "Following" },
+    followers: { qid: "QgDRdL1wGs4vS0mZ0qKHkA", op: "Followers" },
+  };
+  const GQL_FEATURES =
+    "{\"rweb_video_screen_enabled\":false,\"rweb_cashtags_enabled\":true,\"profile_label_improvements_pcf_label_in_post_enabled\":true,\"responsive_web_profile_redirect_enabled\":true,\"rweb_tipjar_consumption_enabled\":false,\"verified_phone_label_enabled\":false,\"creator_subscriptions_tweet_preview_api_enabled\":true,\"responsive_web_graphql_timeline_navigation_enabled\":true,\"premium_content_api_read_enabled\":false,\"communities_web_enable_tweet_community_results_fetch\":true,\"c9s_tweet_anatomy_moderator_badge_enabled\":true,\"responsive_web_grok_analyze_button_fetch_trends_enabled\":false,\"responsive_web_grok_analyze_post_followups_enabled\":true,\"rweb_cashtags_composer_attachment_enabled\":true,\"responsive_web_jetfuel_frame\":true,\"rweb_sports_post_context_enabled\":true,\"x_elections_post_context_enabled\":true,\"responsive_web_grok_share_attachment_enabled\":true,\"responsive_web_grok_annotations_enabled\":true,\"articles_preview_enabled\":true,\"responsive_web_edit_tweet_api_enabled\":true,\"rweb_conversational_replies_downvote_enabled\":false,\"graphql_is_translatable_rweb_tweet_is_translatable_enabled\":true,\"view_counts_everywhere_api_enabled\":true,\"longform_notetweets_consumption_enabled\":true,\"responsive_web_twitter_article_tweet_consumption_enabled\":true,\"content_disclosure_indicator_enabled\":true,\"content_disclosure_ai_generated_indicator_enabled\":true,\"responsive_web_grok_show_grok_translated_post\":true,\"responsive_web_grok_analysis_button_from_backend\":true,\"post_ctas_fetch_enabled\":false,\"freedom_of_speech_not_reach_fetch_enabled\":true,\"standardized_nudges_misinfo\":true,\"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled\":true,\"longform_notetweets_rich_text_read_enabled\":true,\"longform_notetweets_inline_media_enabled\":false,\"responsive_web_nested_quote_preview_enabled\":true,\"responsive_web_grok_image_annotation_enabled\":true,\"responsive_web_grok_imagine_annotation_enabled\":true,\"responsive_web_made_on_x_label_enabled\":false,\"responsive_web_grok_community_note_auto_translation_is_enabled\":true,\"responsive_web_enhance_cards_enabled\":false}";
+
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   let abortFlag = false;
@@ -79,6 +96,213 @@
     return `${NOTIF_PATH}?${NOTIF_PARAMS}&count=${count}${c}`;
   }
 
+  /* ==================== GraphQL：拿全量关注 / 粉丝 ==================== */
+
+  /** 优先用 inject.js 从页面真实请求里抄到的 queryId，拿不到再退回内置值。 */
+  function gqlConfig(kind) {
+    const fallback = GQL_DEFAULT[kind];
+    let live = null;
+    try {
+      const raw = document.documentElement.getAttribute("data-xmc-gql");
+      if (raw) live = JSON.parse(raw)[fallback.op];
+    } catch (e) {}
+    return {
+      qid: (live && live.qid) || fallback.qid,
+      op: fallback.op,
+      features: (live && live.features) || GQL_FEATURES,
+      fromPage: !!(live && live.qid),
+    };
+  }
+
+  /** GraphQL 的用户对象是拆散的新结构，摊平成 REST v1.1 的样子，UI 只维护一套读法。 */
+  function normalizeGqlUser(u) {
+    if (!u || !u.rest_id) return null;
+    const rel = u.relationship_perspectives || {};
+    return {
+      id_str: String(u.rest_id),
+      screen_name: (u.core && u.core.screen_name) || "",
+      name: (u.core && u.core.name) || "",
+      description: (u.profile_bio && u.profile_bio.description) || "",
+      profile_image_url_https: (u.avatar && u.avatar.image_url) || "",
+      followers_count: (u.relationship_counts && u.relationship_counts.followers) || 0,
+      friends_count: (u.relationship_counts && u.relationship_counts.following) || 0,
+      statuses_count: (u.tweet_counts && u.tweet_counts.tweets) || 0,
+      created_at: (u.core && u.core.created_at) || "",
+      ext_is_blue_verified: !!u.is_blue_verified,
+      verified: !!(u.verification && u.verification.verified),
+      protected: !!(u.privacy && u.privacy.protected),
+      following: !!rel.following,
+      followed_by: !!rel.followed_by,
+    };
+  }
+
+  /**
+   * 翻 GraphQL 列表。每页固定 50 人（count 传 100 也只给 50）。
+   *
+   * 注意 404：这个端点会随机返回 404——同一个 URL 连发六次实测 404/200/404/200/200/404，
+   * 纯抖动，不是真的没有数据。所以 404 必须重试，绝不能当成「翻完了」，否则会静默少人。
+   */
+  async function gqlScan({ kind, userId, jobId, delayMs = 650, maxPages = 80 }) {
+    const ct0 = readCookie("ct0");
+    if (!ct0) throw new Error("NO_LOGIN");
+    const uid = userId || viewerId();
+    if (!uid) throw new Error("NO_USER_ID");
+
+    let cfg = gqlConfig(kind);
+    let triedFallback = false;
+    const headers = {
+      authorization: "Bearer " + PUBLIC_BEARER,
+      "x-csrf-token": ct0,
+      "x-twitter-active-user": "yes",
+      "x-twitter-client-language": "zh-cn",
+    };
+
+    const users = [];
+    const seenCursors = new Set();
+    let cursor = "";
+    let pages = 0;
+    abortFlag = false;
+
+    while (pages < maxPages) {
+      if (abortFlag) throw new Error("ABORTED");
+
+      const variables = {
+        userId: uid,
+        count: 50,
+        cursor,
+        includePromotedContent: false,
+        withGrokTranslatedBio: true,
+      };
+      const url =
+        `/i/api/graphql/${cfg.qid}/${cfg.op}` +
+        `?variables=${encodeURIComponent(JSON.stringify(variables))}` +
+        `&features=${encodeURIComponent(cfg.features)}`;
+
+      let res = null;
+      let ok = false;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        res = await fetch(url, { headers, credentials: "include" });
+        if (res.status === 200) {
+          ok = true;
+          break;
+        }
+        if (res.status === 429 || res.status === 503) {
+          emit({ type: "PROGRESS", jobId, kind, phase: "backoff", pages, loaded: users.length, retries: attempt + 1 });
+          await sleep(4000 * (attempt + 1));
+          continue;
+        }
+        if (res.status === 404 || res.status >= 500) {
+          await sleep(400 + attempt * 500);
+          continue;
+        }
+        throw new Error("HTTP_" + res.status);
+      }
+      if (!ok) {
+        // 页面抄来的 queryId 也可能是别的版本留下的，连续失败就用内置兜底再试一次
+        if (cfg.fromPage && !triedFallback) {
+          triedFallback = true;
+          cfg = { qid: GQL_DEFAULT[kind].qid, op: GQL_DEFAULT[kind].op, features: GQL_FEATURES, fromPage: false };
+          continue;
+        }
+        throw new Error(res && res.status === 429 ? "RATE_LIMITED" : "GQL_" + (res ? res.status : "FAIL"));
+      }
+
+      const json = await res.json();
+      const timeline = json && json.data && json.data.user && json.data.user.result &&
+        json.data.user.result.timeline && json.data.user.result.timeline.timeline;
+      if (!timeline) throw new Error("GQL_SHAPE");
+
+      const inst = timeline.instructions || [];
+      let entries = [];
+      let bottom = null;
+      for (const ins of inst) {
+        if (ins.type === "TimelineAddEntries") entries = entries.concat(ins.entries || []);
+        if (ins.type === "TimelineReplaceEntry" && ins.entry && ins.entry.content &&
+          ins.entry.content.cursorType === "Bottom") {
+          bottom = ins.entry.content.value;
+        }
+      }
+      for (const e of entries) {
+        if (e.content && e.content.cursorType === "Bottom") bottom = e.content.value;
+      }
+
+      const batch = [];
+      for (const e of entries) {
+        const r = e.content && e.content.itemContent && e.content.itemContent.user_results &&
+          e.content.itemContent.user_results.result;
+        const n = normalizeGqlUser(r);
+        if (n && n.screen_name) batch.push(n);
+      }
+
+      users.push(...batch);
+      pages++;
+      emit({ type: "PROGRESS", jobId, kind, phase: "page", pages, loaded: users.length, totalCount: null });
+
+      // 只看 cursor 判断结束：TimelineTerminateTimeline 在第一页就会出现（表示「顶部到头」），
+      // 拿它当「翻完了」会让扫描在第一页 50 人就停。
+      if (!bottom || batch.length === 0) break;
+      // 到底时 bottom 形如 "0|2118..."，再翻就是空页
+      if (String(bottom).startsWith("0|")) break;
+      if (seenCursors.has(bottom)) break;
+      seenCursors.add(bottom);
+      cursor = bottom;
+      await sleep(delayMs);
+    }
+
+    return { users, pages, totalCount: null, qidFromPage: cfg.fromPage };
+  }
+
+  /**
+   * 沉默号要「最后一条推文时间」，但 GraphQL 不返回 status 字段，
+   * 只有 REST v1.1 的老列表接口带 status.created_at。
+   * 那个接口有硬上限（~500 人），所以这份数据只做补充：能补上的补，补不上的留空，不假装知道。
+   */
+  async function restStatusMap({ userId, jobId, delayMs = 500, maxPages = 10 }) {
+    const ct0 = readCookie("ct0");
+    const uid = userId || viewerId();
+    if (!ct0 || !uid) return { map: {}, pages: 0, known: 0 };
+
+    const headers = { authorization: "Bearer " + PUBLIC_BEARER, "x-csrf-token": ct0 };
+    const map = {};
+    let known = 0;
+    let cursor = "-1";
+    let pages = 0;
+
+    while (pages < maxPages) {
+      if (abortFlag) break;
+      let res = null;
+      try {
+        res = await fetch(buildUrl("following", uid, cursor, 200, true), { headers, credentials: "include" });
+      } catch (e) {
+        break;
+      }
+      if (!res.ok) break;
+      const data = await res.json();
+      const batch = data.users || [];
+      for (const u of batch) {
+        const sn = String(u.screen_name || "").toLowerCase();
+        if (!sn) continue;
+        if (u.status && u.status.created_at) {
+          const ts = Date.parse(u.status.created_at);
+          if (Number.isFinite(ts)) {
+            map[sn] = ts;
+            known++;
+          }
+        } else if (u.statuses_count === 0) {
+          map[sn] = null; // 零推文号
+        }
+      }
+      pages++;
+      emit({ type: "PROGRESS", jobId, kind: "following", phase: "status", pages, loaded: known, totalCount: null });
+      const next = data.next_cursor_str;
+      if (!next || next === "0" || next === "-1" || batch.length === 0) break;
+      cursor = next;
+      await sleep(delayMs);
+    }
+
+    return { map, pages, known };
+  }
+
   /** 通知里的 user 只留 UI 要用的字段，字段名保持接口原名，交给 panel 的 normalizeUser 处理。 */
   function pickUser(u) {
     if (!u) return null;
@@ -104,51 +328,35 @@
     } catch (e) {}
   }
 
-  async function scan({ kind, userId, jobId, count = 200, delayMs = 1200, maxPages = 60, withStatus = true }) {
-    const ct0 = readCookie("ct0");
-    if (!ct0) throw new Error("NO_LOGIN");
-    const uid = userId || viewerId();
-    if (!uid) throw new Error("NO_USER_ID");
+  /**
+   * 扫一档关系（关注 / 粉丝）。
+   *
+   * 主数据走 GraphQL 拿全量；只看关注列表时，额外用 REST v1.1 补一次「最后发帖时间」。
+   * 以前整份数据都靠 REST，结果一个 1406 关注的账号只扫出 527 人，统计全错——
+   * 那个接口只给前 ~500 个，翻到第 6 页 next_cursor 就变 0 了。
+   */
+  async function scan({ kind, userId, jobId, delayMs = 650, maxPages = 80, withStatus = true }) {
+    const result = await gqlScan({ kind, userId, jobId, delayMs, maxPages });
 
-    const headers = { authorization: "Bearer " + PUBLIC_BEARER, "x-csrf-token": ct0 };
-    const users = [];
-    let cursor = "-1";
-    let pages = 0;
-    let retries = 0;
-    let totalCount = null;
-    abortFlag = false;
-
-    while (pages < maxPages) {
-      if (abortFlag) throw new Error("ABORTED");
-      const res = await fetch(buildUrl(kind, uid, cursor, count, withStatus), {
-        headers,
-        credentials: "include",
-      });
-
-      if (res.status === 429 || res.status === 503) {
-        if (retries >= 3) throw new Error("RATE_LIMITED");
-        retries++;
-        emit({ type: "PROGRESS", jobId, kind, phase: "backoff", pages, loaded: users.length, retries });
-        await sleep(4000 * retries);
-        continue;
+    if (withStatus && kind === "following") {
+      try {
+        const { map, known } = await restStatusMap({ userId, jobId });
+        let covered = 0;
+        for (const u of result.users) {
+          const sn = String(u.screen_name || "").toLowerCase();
+          if (!Object.prototype.hasOwnProperty.call(map, sn)) continue;
+          u.last_tweet_at = map[sn];
+          u.status_known = true;
+          covered++;
+        }
+        result.statusCovered = covered;
+        result.statusKnown = known;
+      } catch (e) {
+        result.statusCovered = 0;
       }
-      if (!res.ok) throw new Error("HTTP_" + res.status);
-
-      const data = await res.json();
-      retries = 0;
-      const batch = data.users || [];
-      if (totalCount === null && typeof data.total_count === "number") totalCount = data.total_count;
-      users.push(...batch);
-      pages++;
-      emit({ type: "PROGRESS", jobId, kind, phase: "page", pages, loaded: users.length, totalCount });
-
-      const next = data.next_cursor_str;
-      if (!next || next === "0" || next === "-1" || next === cursor || batch.length === 0) break;
-      cursor = next;
-      await sleep(delayMs);
     }
 
-    return { users, pages, totalCount };
+    return result;
   }
 
   /**

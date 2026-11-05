@@ -83,6 +83,7 @@ const state = {
   intelSummary: null, // 覆盖天数 / 条数 / 人数
   intelAt: null,
   intelScanned: 0,
+  statusCovered: 0, // 有多少人拿到了「最后发帖时间」（旧接口有上限，拿不全）
   prog: { kind: "following", pages: 0, loaded: 0, totalCount: null, stage: 1, totalStages: 1 },
 };
 
@@ -205,9 +206,11 @@ function updateProgress(msg) {
   el.progressText.textContent =
     msg.phase === "backoff"
       ? `${stage}${label} 被限流，等待重试…（第 ${msg.retries} 次）`
-      : p.kind === "interactions"
-        ? `${label} 第 ${p.pages} 页，已提取 ${p.loaded} 条互动`
-        : `${stage}${label} 第 ${p.pages} 页，已读取 ${p.loaded} 人`;
+      : msg.phase === "status"
+        ? `${stage}补充最后发帖时间（旧接口，最多约 500 人）… 已补 ${p.loaded} 人`
+        : p.kind === "interactions"
+          ? `${label} 第 ${p.pages} 页，已提取 ${p.loaded} 条互动`
+          : `${stage}${label} 第 ${p.pages} 页，已读取 ${p.loaded} 人`;
 }
 
 async function startScan() {
@@ -241,6 +244,7 @@ async function startScan() {
 
     const fol = await sendTab(tab.id, { type: "SCAN", kind: "following", userId, jobId });
     if (!fol || !fol.ok) throw new Error(fol ? fol.error : "SCAN_FAILED");
+    state.statusCovered = fol.statusCovered || 0;
 
     let fans = null;
     if (withFans) {
@@ -296,6 +300,12 @@ async function startScan() {
     const tip = `扫描完成：关注 ${result.stats.following} · 互关 ${result.stats.mutual} · 未回关 ${result.stats.notBack}`;
     toast(tip, 3000);
     if (!fans) setHint("本次未拉粉丝列表，所以纯粉丝和掉粉统计为空。", false);
+    else if (state.statusCovered && state.statusCovered < result.stats.following) {
+      setHint(
+        `沉默号只覆盖 ${state.statusCovered}/${result.stats.following} 人：X 只有旧接口带「最后发帖时间」，它最多给约 500 个关注。其余人的最后发帖时间显示为未知，可点「时间未知」档查看。`,
+        false
+      );
+    }
   } catch (e) {
     showProgress(false);
     explainScanError(e.message || String(e));
@@ -315,6 +325,12 @@ function explainScanError(msg) {
   else if (msg === "NO_USER_ID") setHint("读不到当前账号 ID，刷新 x.com 页面后重试。", true);
   else if (msg === "RATE_LIMITED") setHint("请求被限流了，等几分钟再试。", true);
   else if (msg === "BAD_REQUEST") setHint("通知接口返回 400，通常是参数过期了，刷新 x.com 页面再试。", true);
+  else if (/^GQL_404/.test(msg))
+    setHint(
+      "X 的列表接口连续返回 404。通常是 queryId 过期了：先打开 x.com 的个人主页、点一下「正在关注」和「关注者」，再回来点扫描（插件会自动从页面请求里取到新的 queryId）。",
+      true
+    );
+  else if (/^GQL_SHAPE/.test(msg)) setHint("接口返回的结构变了，插件可能要先更新。先把 x.com 刷新一次再试。", true);
   else setHint("扫描失败：" + msg, true);
 }
 
@@ -430,6 +446,46 @@ const DEFAULT_SORT = {
   stale: "stale",
   changes: "weight",
 };
+
+const SORT_LABELS = {
+  weight: "影响力",
+  tracked: "跟踪最久",
+  stale: "最久没更新",
+  score: "互动分",
+  count: "互动次数",
+  recent: "最近互动",
+};
+
+/**
+ * 每个 tab 只列自己有数据的排序项。
+ *
+ * 以前 6 个选项一股脑塞进下拉框，跨 tab 选到没字段的排序会静默失效——
+ * 比如在「未回关」里选「互动分」，那批人根本没有 score，比较函数拿到 NaN，
+ * 排序看起来「没反应」，其实是什么都没排。
+ */
+const TAB_SORTS = {
+  notBack: ["weight", "tracked", "stale"],
+  mutual: ["weight", "stale"],
+  pureFans: ["weight", "stale"],
+  changes: ["weight", "stale"],
+  interact: ["score", "count", "recent", "weight"],
+  stale: ["stale", "weight"],
+};
+
+/** 按当前 tab 重建下拉项；当前排序不适用时回落到该 tab 的默认排序。 */
+function renderSortOptions() {
+  const allowed = TAB_SORTS[state.tab] || ["weight"];
+  const cur = allowed.includes(state.sortBy) ? state.sortBy : DEFAULT_SORT[state.tab] || allowed[0];
+  state.sortBy = cur;
+  el.sortBy.textContent = "";
+  for (const k of allowed) {
+    const o = document.createElement("option");
+    o.value = k;
+    o.textContent = SORT_LABELS[k] || k;
+    el.sortBy.appendChild(o);
+  }
+  el.sortBy.value = cur;
+}
 
 const sortRows = (rows) => (SORTERS[state.sortBy] || sortByWeight)(rows);
 
@@ -651,8 +707,15 @@ function staleNode(u) {
   const s = document.createElement("span");
   const days = staleDays(u);
   if (days === null) {
-    s.className = "stale-num";
-    s.textContent = "· 从没发过推文";
+    s.className = "stale-num fresh";
+    if ((u.tweets || 0) === 0) {
+      s.textContent = "· 从没发过推文";
+    } else {
+      // 拿不到 ≠ 没更新。GraphQL 不给这个字段，旧接口只能覆盖前约 500 个关注，
+      // 硬说成「零推文」会把正常人当死号。
+      s.textContent = "· 最后发帖时间未知";
+      s.title = "X 的新接口不返回最后发帖时间；旧接口最多只覆盖约 500 个关注";
+    }
     return s;
   }
   s.className = "stale-num" + (days < 30 ? " fresh" : "");
@@ -866,9 +929,10 @@ function renderStaleChips() {
   el.staleChips.hidden = false;
   const rows = staleRows();
   const st = staleStats(rows);
-  const defs = [{ key: "all", label: "全部", n: rows.length }].concat(
-    STALE_BUCKETS.map((b) => ({ key: b.key, label: b.label, n: st[b.key] || 0 }))
-  );
+  // 拿不到最后发帖时间的那批，单独放一个「未知」档，而不是混进「不沉默」
+  const defs = [{ key: "all", label: "全部", n: rows.length }]
+    .concat(STALE_BUCKETS.map((b) => ({ key: b.key, label: b.label, n: st[b.key] || 0 })))
+    .concat([{ key: "unknown", label: "时间未知", n: st.unknown || 0 }]);
   for (const d of defs) {
     const b = document.createElement("button");
     b.className = "chip";
@@ -897,6 +961,7 @@ function renderTabs() {
   }
   el.tabs.hidden = false;
   el.toolbar.hidden = false;
+  renderSortOptions();
   const counts = {
     notBack: state.result ? state.result.notBack.length : 0,
     mutual: state.result ? state.result.mutual.length : 0,

@@ -3,21 +3,26 @@
 查 X（Twitter）上的互关情况：谁没回关你、谁只是你的粉丝、这次相比上次掉了谁。
 所有数据只在你本机处理，不发往任何服务器。
 
-## 为什么这个实现比同类工具稳
+## 数据从哪来
 
-同类开源项目（x-follow-checker、x-purge 等）走 GraphQL 内部接口，需要维护会定期失效的
-`queryId`，还要处理前端现算的 `x-client-transaction-id`。
-
-这个插件走 REST v1.1 端点：
+关注 / 粉丝列表走 X 网页版的 GraphQL：
 
 ```
-GET  /i/api/1.1/friends/following/list.json?user_id=...&count=200&cursor=-1&include_followed_by=1
-GET  /i/api/1.1/followers/list.json?user_id=...&count=200&cursor=-1&include_followed_by=1
-POST /i/api/1.1/friendships/create.json        body: user_id=... 或 screen_name=...
+GET /i/api/graphql/<queryId>/Following?variables={userId,count,cursor,…}&features={…}
+GET /i/api/graphql/<queryId>/Followers?variables={…}
 ```
 
 只需要 `authorization: Bearer <X 网页端公开 bearer>` 和 `x-csrf-token: <ct0 cookie>`，
-**不需要 queryId、不需要 transaction-id**，也不依赖页面 DOM 结构。X 前端改版基本不影响。
+**不需要 `x-client-transaction-id`**（实测重放页面抓到的请求，不带这个头照样 200）。
+
+queryId 是 X 每次发版可能更换的哈希。插件里内置了一份兜底值，同时 `inject.js`
+（跑在页面 MAIN world）会把页面自己发出的真实 queryId 和 features 抄下来写到 `<html data-xmc-gql>`，
+所以 X 换哈希后一般不用改代码——打开一次 x.com 的「正在关注」页面即可。
+
+> **为什么不用 REST v1.1？** 早期版本用 `friends/following/list.json`，看着更稳，其实有硬上限：
+> 翻到第 6 页就返回 `next_cursor_str: "0"`，一个 1406 关注的账号只能扫出 **527 人**，
+> 互关率、未回关名单、沉默号统计全是错的。GraphQL 能翻到 **1418 人 / 29 页**，所以换了过来。
+> （`following/list.json` 现在只用来补「最后发帖时间」，见下面沉默号的说明。）
 
 ## 功能
 
@@ -67,7 +72,7 @@ Edge 同理，地址换成 `edge://extensions/`。
 1. 打开并登录 x.com（任意页面都行，插件要借这个页面的登录态）
 2. 点插件图标打开侧边栏，显示「已连接 · 账号 ID …」就绪
 3. 勾选「同时拉取粉丝列表」可多算纯粉丝和掉粉（请求数翻倍）
-4. 点「开始扫描」——顺手把每个人的最后发帖时间也读回来，沉默号就用它
+4. 点「开始扫描」。关注上千时要等一分钟左右（GraphQL 每页 50 人，1400 个关注 ≈ 29 页），进度条会显示翻到第几页；扫完顺手补一次最后发帖时间给沉默号用
 5. 点统计栏的「未回关蓝V」「未回关非V」「半年未更」「零推文」都能直接跳到对应名单；工具栏的筛选按钮可以在任何一档里切 全部 / 蓝V / 非V
 6. 要看谁跟你互动最多，点「扫互动」：读通知流，按加权分排出排行榜（回复 / 转发 / @ 各 3 分，关注 2 分，点赞 1 分）
 7. 纯粉丝标签里点「+ 关注」当场回关；未回关 / 沉默号标签里连点两次「取关」清人；要留档就点「导出」
@@ -76,8 +81,10 @@ Edge 同理，地址换成 `edge://extensions/`。
 
 | 端点 | 结果 |
 |---|---|
-| `following/list.json` | 200，200 条/页，`followed_by` 字段 20/20 都在 |
-| `followers/list.json` | 200，200 条/页 |
+| GraphQL `Following` | 200，**50 条/页**（`count=100` 也只给 50），能翻到全部 1418 人 / 29 页 |
+| GraphQL `Followers` | 200，同样 50 条/页 |
+| GraphQL 用户对象 | 新结构：`core` / `relationship_perspectives.followed_by` / `is_blue_verified` / `relationship_counts` / `tweet_counts`，**没有 `status`** |
+| `following/list.json` | 200，200 条/页，但**最多只给约 500 人**（第 6 页 `next_cursor=0`） |
 | `following/list.json`（不带 `skip_status`） | 200，多出 `status.created_at` → 沉默号靠它；体积约 3 倍（524 人 ≈ 1.7MB） |
 | `v2/notifications/all.json` | 200，`count` 上限 40，超过直接 400；能翻到约 371 条就到底 |
 | `friendships/create.json` | 200，`user_id` 与 `screen_name` 两种传法都可用，幂等 |
@@ -87,12 +94,22 @@ Edge 同理，地址换成 `edge://extensions/`。
 | `statuses/mentions_timeline.json` | **同上，200 + 空 body** |
 | `favorites/list.json` | **404 `code 34`**，点赞列表拿不到 |
 | `users/show.json` | **404，已下线**（所以关注时用 `screen_name` 兜底，不依赖它） |
-| GraphQL `Following` | 需要 `x-client-transaction-id`，且响应里**没有** `followed_by`，故弃用 |
+| `users/lookup.json` | **404 `code 34`**，批量查最后发帖时间这条路也堵死了 |
 
 几个必须知道的坑：
 
+> **GraphQL 会随机返回 404**：同一个 URL 连发六次实测 `404/200/404/200/200/404`，纯抖动。
+> 必须重试，而且**绝不能把 404 当成「没有下一页」**——那样会静默少掉一大半人。
+>
+> **`TimelineTerminateTimeline` 不代表翻完了**：它在第一页的 instructions 里就出现（含义是「顶部到头」），
+> 拿它当结束条件会让扫描停在第 1 页 50 人。判断结束只能看 bottom cursor（空 / `0|` 开头 / 重复 / 本页没用户）。
+>
+> **沉默号拿不全**：GraphQL 不返回最后发帖时间，只有 `following/list.json`（带 `status`）有这个字段，
+> 而它只覆盖约 500 人。所以插件对拿不到的人显示「最后发帖时间未知」，单独一档列出来，
+> 不会把正常人当成死号。`users/lookup.json` 想批量补也 404 了。
+>
 > **`id` 会丢精度**：v1.1 返回的 `id` 是 number，超过 2^53 已经失精（实测 `2117144550020177920` → `...178000`），
-> 用它关注会关注到别人。代码只认 `id_str`。
+> 用它关注会关注到别人。代码只认 `id_str` / `rest_id`。
 >
 > **写接口的响应体会滞后**：实测 `destroy.json` 返回 200 但 body 里 `following` 还是 `true`，
 > 而 `friendships/show.json` 查出来已经是 `false`。所以成败以 show 为准，别看 body。
@@ -125,7 +142,8 @@ Edge 同理，地址换成 `edge://extensions/`。
 ## 已知限制
 
 - 必须有一个已登录的 x.com 标签页（登录态来自它）
-- 粉丝数上万时扫描要几十秒，会有进度条；单次最多 60 页（12000 人）
+- 关注/粉丝都上千时扫描要一分钟左右：GraphQL 每页只给 50 人，1400 个关注就得翻 29 页。会有进度条，可随时「停止」
+- 单次最多 80 页（4000 人）
 - 被限流（429）会自动退避重试 3 次，仍失败就跳过粉丝列表、保留关注列表结果
 - 判定取舍：接口 `followed_by` 与粉丝列表差集**任意一方说互关就算互关**，宁可漏报也不错怪人
 - 关注/取关都是真实写操作：一次一个、间隔 3~6 秒，一天别超过几十个，否则可能触发 226（自动化判定）或 429
@@ -135,12 +153,12 @@ Edge 同理，地址换成 `edge://extensions/`。
 - **互动榜只看得到通知流里还有的历史**：X 不按时间倒着无限给，实测一个账号翻到 371 条就到底（覆盖 26 天）。所以榜单是「最近这段时间谁跟你互动最多」，不是终身累计，面板底部会写清覆盖范围
 - **互动榜只算他 → 你的方向**：回复、点赞、转发、@你、关注你。你 → 他的方向拿不到——`statuses/user_timeline.json` 和 `favorites/list.json` 都已失效（见上表），没有可靠数据源
 - 互动数据**只存在内存里**，关掉侧边栏就没了，重开要点一次「扫互动」；关注/粉丝快照才会存进 IndexedDB
-- 沉默号依赖 `status.created_at`：零推文号没有这个字段，单独归到「零推文」一档；极少数账号取不到时间，不在任何档里
+- **沉默号只能覆盖一部分人**：GraphQL 不返回最后发帖时间，只有旧接口 `following/list.json` 带 `status.created_at`，而它最多给约 500 个关注。所以只有这部分人有真实的「最后发帖 N 天」，其余显示「最后发帖时间未知」，单独一档可查，不会把正常人当死号。零推文号（`tweet_counts.tweets = 0`）能准确判定，「零推文」一档是全量的
 
 ## 开发
 
 ```bash
-# 核心逻辑单测（40 个用例，含实测账号数据回归）
+# 核心逻辑单测（43 个用例，含实测账号数据回归）
 node --test tests/core.test.mjs
 
 # UI 本地预览（伪造 chrome API + 假数据，不需要装扩展）
@@ -153,13 +171,14 @@ python -m http.server 8765 --bind 127.0.0.1
 ```
 manifest.json      扩展清单
 background.js      打开侧边栏
-content.js         在 x.com 页面里发 REST 请求（无 ES module）
+content.js         在 x.com 页面里发 GraphQL / REST 请求（无 ES module）
+inject.js          跑在页面 MAIN world，抄下页面自己用的 GraphQL queryId（只读，不发请求）
 lib/core.js        纯逻辑：分类 / 互动排行 / 沉默分档 / diff / CSV（不依赖 chrome，可单测）
 lib/db.js          IndexedDB 快照存储
 sidepanel/         侧边栏 UI
 dev/               本地预览用，打包时排除
 tests/             node 单测
-docs/              接口验证报告（REST v1.1 端点实测记录）
+docs/              接口验证报告（GraphQL / REST 端点实测记录）
 ```
 
 接口怎么试出来的、踩过哪些坑，全在 [docs/api-verification.md](docs/api-verification.md)。
@@ -171,7 +190,7 @@ python - <<'PY'
 import zipfile, pathlib
 root = pathlib.Path(".")
 skip = {"dev", "tests", "dist", "node_modules", ".git"}
-with zipfile.ZipFile("dist/x-mutual-check-0.4.0.zip", "w", zipfile.ZIP_DEFLATED) as z:
+with zipfile.ZipFile("dist/x-mutual-check-0.5.0.zip", "w", zipfile.ZIP_DEFLATED) as z:
     for p in root.rglob("*"):
         if p.is_dir() or p.suffix == ".zip" or p.suffix == ".md":
             continue
