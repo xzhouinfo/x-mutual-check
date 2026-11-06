@@ -153,7 +153,7 @@ async function main() {
       detailH: Math.round(d.getBoundingClientRect().height),
       bars,
       ratio: document.getElementById('qRatio').textContent.slice(0, 120),
-      help: document.getElementById('qHelp').textContent.slice(0, 80),
+      usedTitle: document.getElementById('qUsed').title.slice(0, 80),
       docW: document.body.scrollWidth,
       winW: window.innerWidth,
     };
@@ -161,16 +161,31 @@ async function main() {
   console.log("METRICS2", JSON.stringify(metrics2));
   await shot(OUT.replace(/\.png$/, "-detail.png"), 620);
 
-  // 再验一次「校准为」与「清零」
+  // 校准 → 标记已满 → 再点一次取消
   await evalJs(`(() => { const i = document.getElementById('qSetVal'); i.value = '120'; document.getElementById('qSetBtn').click(); })()`);
   await sleep(700);
-  console.log("AFTER SET", await evalJs("document.getElementById('qLeft').textContent + ' | ' + document.getElementById('qUsed').textContent"));
-  await evalJs("document.getElementById('qClear').click()");
-  await sleep(700);
-  console.log("AFTER CLEAR", await evalJs("document.getElementById('qLeft').textContent + ' | ' + document.getElementById('qUsed').textContent"));
+  console.log("AFTER SET", await evalJs("document.getElementById('qLeft').textContent + ' | ' + document.getElementById('qUsed').textContent + ' | ' + document.getElementById('qSetVal').value"));
   await evalJs("document.getElementById('qCap').click()");
   await sleep(700);
-  console.log("AFTER CAP", await evalJs("document.getElementById('qLeft').textContent + ' | ' + document.getElementById('quota').className"));
+  console.log("AFTER CAP", await evalJs("document.getElementById('qLeft').textContent + ' | ' + document.getElementById('qCap').getAttribute('aria-pressed') + ' | ' + document.getElementById('quota').className"));
+  await evalJs("document.getElementById('qCap').click()");
+  await sleep(700);
+  console.log("AFTER UNCAPPED", await evalJs("document.getElementById('qLeft').textContent + ' | ' + document.getElementById('qCap').getAttribute('aria-pressed')"));
+  // 布局体检：两行控件有没有换行 / 溢出
+  console.log("ROWS", await evalJs(`JSON.stringify(Array.from(document.querySelectorAll('.q-row')).map(r => ({h: Math.round(r.getBoundingClientRect().height), w: Math.round(r.getBoundingClientRect().width), kids: Array.from(r.children).map(c => Math.round(c.getBoundingClientRect().left) + '+' + Math.round(c.getBoundingClientRect().width))})))`));
+
+  // 窄宽体检：340px 下两行会不会挤到一起
+  await send("Emulation.setDeviceMetricsOverride", { width: 340, height: 900, deviceScaleFactor: 2, mobile: false });
+  await sleep(400);
+  console.log("NARROW", await evalJs(`JSON.stringify({docW: document.body.scrollWidth, rows: Array.from(document.querySelectorAll('.q-row')).map(r => Math.round(r.getBoundingClientRect().height)), capColor: getComputedStyle(document.getElementById('qCap')).color})`));
+  await evalJs("document.getElementById('qCap').click()");
+  await sleep(600);
+  console.log("CAP STYLE", await evalJs(`(() => { const c = document.getElementById('qCap'); return c.textContent + ' | pressed=' + c.getAttribute('aria-pressed') + ' | color=' + getComputedStyle(c).color + ' | left=' + document.getElementById('qLeft').textContent; })()`));
+  await shot(OUT.replace(/\.png$/, "-narrow-cap.png"), 520);
+  await send("Emulation.clearDeviceMetricsOverride");
+  await sleep(300);
+  await evalJs("document.getElementById('qCap').click()");
+  await sleep(500);
 
   // 切到「滚动 24 小时」口径，确认倒计时文案和剩余数会跟着变
   await evalJs(`(() => { const m = document.getElementById('qMode'); m.value = 'rolling'; m.dispatchEvent(new Event('change')); })()`);

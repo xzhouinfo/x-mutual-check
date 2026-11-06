@@ -46,15 +46,14 @@ const el = {
   qToggle: $("qToggle"),
   qDetail: $("qDetail"),
   qChart: $("qChart"),
+  qCaption: $("qCaption"),
   qRatio: $("qRatio"),
   qMode: $("qMode"),
   qCap: $("qCap"),
-  qClear: $("qClear"),
   qExport: $("qExport"),
   qPeak: $("qPeak"),
   qSetVal: $("qSetVal"),
   qSetBtn: $("qSetBtn"),
-  qHelp: $("qHelp"),
   withFollowers: $("withFollowers"),
   scanBtn: $("scanBtn"),
   intelBtn: $("intelBtn"),
@@ -213,7 +212,7 @@ const QUOTA_MODE_KEY = "xmc:quota-mode";
 
 const quota = { events: [], stats: null, mode: "pt", dayKey: null, expanded: false };
 
-const SRC_LABEL = { panel: "面板关注", page: "页面点击", scan: "扫描补记", manual: "手动校准" };
+const SRC_SHORT = { panel: "面板", page: "页面", scan: "扫描", manual: "手动" };
 
 function quotaMode() {
   return quota.mode === "rolling" ? "rolling" : "pt";
@@ -293,8 +292,11 @@ function renderQuota() {
   el.qLimit.textContent = "/ " + s.limit;
   el.qLeft.textContent = s.capped ? "0" : String(s.remaining);
   el.qUsed.textContent = `已关注 ${s.used}`;
+  el.qUsed.title = [srcText(s), "本机记账，不是 X 服务端的计数"].filter(Boolean).join(" | ");
   el.qUnf.textContent = `取关 ${s.unfollows}`;
-  el.qFill.style.width = Math.min(100, Math.round((s.used / s.limit) * 100)) + "%";
+  // cap 时额度已耗尽，条子走满；否则按已用比例
+  const pct = s.capped ? 100 : Math.min(100, Math.round((s.used / s.limit) * 100));
+  el.qFill.style.width = pct + "%";
   el.quota.classList.toggle("warn", s.capped || s.used >= s.limit * 0.8);
   el.quota.title = s.capped ? "今天已经到上限了（X 提示过不能再关注）" : "本机记录的今日关注数，不是 X 服务端计数";
   renderQuotaCountdown();
@@ -320,37 +322,29 @@ function renderQuotaChart() {
   el.qPeak.textContent = max > 1 ? `最多 ${max} 个/天` : "";
 }
 
+/** 5000 / 粉丝比只给一句话，细则看 README。 */
 function ratioText(r, hasFollowers) {
   if (!r) return "";
-  if (!hasFollowers) return `关注 ${r.following} 个。粉丝数这次没扫到，粉丝比限制算不了——勾上「同时拉取粉丝列表」再扫一次就有了。`;
-  if (r.level === "ok") {
-    return `关注 ${r.following} 个，离 5000 这个硬线还有 ${r.gap} 个。到 5000 之后才按「粉丝/关注」比限流。`;
-  }
-  if (r.level === "ratio") {
-    return `关注 ${r.following} 个，已过 5000：粉丝 ${r.followers}，按社区经验值（粉丝×1.1）估算还能关注约 ${r.gap} 个。X 不公布具体比例，这条只是估算。`;
-  }
-  return `关注 ${r.following} 个，粉丝 ${r.followers}，已经碰到比例上限的估算值——想继续关注得先涨粉，或者取关一些。`;
+  if (!hasFollowers) return `关注 ${r.following} · 粉丝数没扫到`;
+  if (r.level === "ok") return `关注 ${r.following} · 距 5000 还有 ${r.gap}`;
+  if (r.level === "ratio") return `关注 ${r.following} · 粉丝 ${r.followers} · 约还能关注 ${r.gap}（估算）`;
+  return `关注 ${r.following} · 粉丝 ${r.followers} · 已到比例上限`;
 }
 
-function helpText(s) {
+/** 今天的账从哪来，只列有数的来源；塞进「已关注 N」的悬浮提示，不占版面。 */
+function srcText(s) {
   const bits = Object.entries(s.bySrc || {})
-    .filter(([k, v]) => v > 0 && k !== "manual")
-    .map(([k, v]) => `${SRC_LABEL[k] || k} ${v}`);
-  const srcLine = bits.length ? `今天这笔账：${bits.join(" · ")}。` : "";
-  const manual = (s.bySrc && s.bySrc.manual) || 0;
-  return (
-    `<b>${srcLine}</b>` +
-    (manual ? `其中 ${manual} 个是手动校准填的。` : "") +
-    "数据只记在本机：面板里点的、x.com 页面上点的关注都会记（方向以接口返回为准，拿不准的不记）。" +
-    "手机上、别的浏览器里关注的看不到，只能靠下次扫描对比快照补记，时间会落在扫描那一刻，所以和 X 的真实计数会有偏差——差得多就用下面「校准为」改一下。" +
-    "官方只说「每天 400 个」没说时区，这里默认美西 0 点切日。"
-  );
+    .filter(([k, v]) => v > 0)
+    .map(([k, v]) => `${SRC_SHORT[k] || k} ${v}`);
+  return bits.join(" · ");
 }
 
 function renderQuotaDetail() {
   const s = quota.stats;
   if (!s) return;
   renderQuotaChart();
+  el.qCaption.textContent = s.mode === "rolling" ? "近 14 天 · 历史按美西日" : "近 14 天";
+  el.qCap.setAttribute("aria-pressed", String(!!s.capped));
   if (!state.result) {
     el.qRatio.hidden = true;
     el.qRatio.textContent = "";
@@ -360,7 +354,8 @@ function renderQuotaDetail() {
     el.qRatio.hidden = false;
     el.qRatio.textContent = ratioText(ratioInfo(st.following, st.followers || 0), hasFollowers);
   }
-  el.qHelp.innerHTML = helpText(s);
+  const src = srcText(s);
+  el.qUsed.title = [src, "本机记账，不是 X 服务端的计数"].filter(Boolean).join(" | ");
 }
 
 function currentWindowStart() {
@@ -1430,22 +1425,22 @@ async function boot() {
     toast(quota.mode === "rolling" ? "改成按滚动 24 小时统计" : "改成按美西 0 点切日");
   });
 
+  // 标记已满 = 记一条 cap（X 的 161 比数数更准）；再点一次是取消
   el.qCap.addEventListener("click", async () => {
     if (!state.userId) {
       toast("先打开 x.com 让插件连上账号");
       return;
     }
-    // cap 是「X 明确说不能再关注了」——比数数准，出现就当今天满了
+    if (quota.stats && quota.stats.capped) {
+      const start = currentWindowStart();
+      await setQuotaEvents((quota.events || []).filter((e) => !(e && e.a === "cap" && e.t >= start)));
+      await loadQuota();
+      toast("已取消「今天满了」");
+      return;
+    }
     await pushQuotaEvents([{ t: Date.now(), a: "cap", u: "", s: "manual" }]);
     await loadQuota();
-    toast("已标记今天到上限，过了重置点会自动恢复");
-  });
-
-  el.qClear.addEventListener("click", async () => {
-    if (!state.userId) return;
-    await setQuotaEvents(withoutCurrentWindow(quota.events));
-    await loadQuota();
-    toast("今天记的关注数已清零（历史保留）");
+    toast("已标满，过了重置点自动恢复");
   });
 
   el.qSetBtn.addEventListener("click", async () => {

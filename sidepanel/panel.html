@@ -34,22 +34,22 @@
 
     <div class="q-detail" id="qDetail" hidden>
       <div class="q-chart" id="qChart"></div>
-      <p class="q-caption"><span>近 14 天（美西日）</span><span id="qPeak"></span></p>
+      <p class="q-caption"><span id="qCaption">近 14 天</span><span id="qPeak"></span></p>
       <p class="q-ratio" id="qRatio" hidden></p>
-      <div class="q-actions">
-        <select id="qMode" class="mini-select" title="按哪个口径切「一天」">
-          <option value="pt">美西 0 点重置</option>
-          <option value="rolling">滚动 24 小时</option>
+      <div class="q-row">
+        <select id="qMode" class="mini-select" title="「一天」从哪里算起">
+          <option value="pt">美西 0 点</option>
+          <option value="rolling">滚动 24h</option>
         </select>
-        <button id="qCap" class="ghost" title="X 提示「You are unable to follow more people at this time」时点这里">标记已满</button>
-        <button id="qClear" class="ghost" title="清掉今天记下的数字，不影响历史">今日清零</button>
-        <button id="qExport" class="ghost">导出</button>
+        <span class="q-spacer"></span>
+        <button id="qExport" class="q-link" title="导出近 14 天每日关注数">导出</button>
       </div>
-      <div class="q-actions">
-        <input id="qSetVal" class="q-input" type="number" min="0" max="400" step="1" placeholder="已用数量" />
-        <button id="qSetBtn" class="ghost" title="按你实际看到的数字校准今天">校准为</button>
+      <div class="q-row">
+        <input id="qSetVal" class="q-input" type="number" min="0" max="400" step="1" placeholder="实际已用" title="X 上实际已关注多少个，填这里校准" />
+        <button id="qSetBtn" class="q-link">校准</button>
+        <span class="q-spacer"></span>
+        <button id="qCap" class="q-link" aria-pressed="false" title="X 提示「You are unable to follow more people at this time」时点这里，今天就算满了；再点一次取消">标记已满</button>
       </div>
-      <p class="q-help" id="qHelp"></p>
     </div>
   </section>
 
