@@ -1,6 +1,7 @@
 # X 互关检测
 
-查 X（Twitter）上的互关情况：谁没回关你、谁只是你的粉丝、这次相比上次掉了谁。
+查 X（Twitter）上的互关情况：谁没回关你、谁只是你的粉丝、这次相比上次掉了谁，
+以及**今天还能关注多少个**（X 每天 400 个上限，按美西 0 点重置）。
 所有数据只在你本机处理，不发往任何服务器。
 
 ## 数据从哪来
@@ -26,6 +27,7 @@ queryId 是 X 每次发版可能更换的哈希。插件里内置了一份兜底
 
 ## 功能
 
+- **每日关注额度**：顶部常驻一张卡，显示今天还剩多少个关注额度、离重置还有多久，附近 14 天柱状图和取关计数
 - **一键扫描**：读你的关注列表，按 `followed_by` 字段判断谁没回关
 - **三档分类**：未回关 / 互关 / 纯粉丝（关注你但你没关注）
 - **未回关蓝V**：统计栏单独一格，点一下直接筛出「你关注了但对方没回关」的蓝V名单
@@ -37,6 +39,71 @@ queryId 是 X 每次发版可能更换的哈希。插件里内置了一份兜底
 - **直接回关**：纯粉丝列表每行有「+ 关注」按钮，点一下就关注，不用跳页面
 - **直接取关**：未回关 / 沉默号列表每行有「取关」按钮，两段式确认（第一次变「确认?」，3 秒内再点才执行）
 - **导出 CSV**：带 BOM，Excel 直接打开不乱码，文件名自动带「蓝V / 非V / 分档」后缀
+
+## 每日关注额度（v0.6.0）
+
+X 官方的规则（[About following](https://help.x.com/en/using-x/following)）：
+
+| 规则 | 说明 |
+|---|---|
+| 每天 400 个 | 所有账号一视同仁，Premium 也一样 |
+| 关注总数 5000 | 到 5000 之后能否继续关注，取决于你自己的「粉丝/关注」比例（X 不公布公式） |
+| 小时级软限 | 官方在报错说明里写了「followed too many accounts too quickly，等一小时」；社区实测约 30~50 个/小时 |
+| 行为红线 | follow churn（反复关注+取关刷粉）、无差别批量关注、复制他人粉丝、第三方涨粉服务，都违反 X Rules |
+
+面板顶部因此常驻一张额度卡：
+
+```
+今日还能关注                    363 / 400  明细
+▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+已关注 37 · 6:06:08 后重置 · 取关 1
+```
+
+点「明细」展开近 14 天柱状图（按美西日切分）、5000/粉丝比提示、以及三个校准入口
+（`标记已满` / `今日清零` / `校准为 N`）和每日 CSV 导出。
+
+### 「一天」从哪一刻开始
+
+官方只写 "per day"，没写时区。插件**默认按美西（America/Los_Angeles）0 点**切日——
+X 总部时区，也是第三方工具最常用的口径；明细里可以一键改成「滚动 24 小时」。
+
+时区计算没有手写偏移表，走 `Intl.DateTimeFormat` + 两遍偏移校正，夏令时切换日（23 或 25 小时）
+也照常算对，单测里钉了 2026-03-08 / 2026-11-01 两天。
+
+### 数字是怎么数出来的
+
+X 没有「查询今日已关注次数」的接口，所以只能本机记账，三个来源合并去重：
+
+| 来源 | 怎么来的 | 准确度 |
+|---|---|---|
+| 页面点击 | `inject.js` 在页面里钩 fetch/XHR，识别关注/取关请求，方向以响应体 `data.following` 为准 | 高 |
+| 面板点击 | 插件里点「+ 关注」成功后直接记一笔 | 100% |
+| 扫描补记 | 扫描时对比上次快照，新增的 handle 记到**当次扫描时刻**（覆盖手机上点的关注） | 中 |
+
+扫描补记有两道闸：距上次扫描超过 20 小时就不补（几天的量没法拆到每一天），
+已经实时记过的 uid 不重复计。
+
+> 拿不准的时候**不记**：取关被误记成关注会白扣额度，比漏记更让人困惑。
+
+## 和同类开源项目比
+
+| 项目 | 形态 | 数据来源 | 有额度统计 | 有互动榜 | 全量关注 |
+|---|---|---|---|---|---|
+| 本项目 | MV3 侧边栏 | GraphQL `Following/Followers` | ✅ 美西日界线 | ✅ 通知流加权 | ✅ 1418 人实测 |
+| [442635398/x-follow-checker](https://github.com/442635398/x-follow-checker) | MV3 页面浮窗 | 页面会话调内部接口，分片+冷却续扫 | — | — | 单次约 1000 人上限，需「继续检测」 |
+| [BryceYuuu/x-non-follower-checker](https://github.com/BryceYuuu/x-non-follower-checker) | MV3 弹窗+侧栏 | 读关注列表的 "Follows you" 标记 | — | — | — |
+| [互关标记 for X](https://zuoye.si/mutualbadge)（MIT） | 内容脚本标记 | **不发请求**，只读时间线里已有的关系字段 | — | — | — |
+| [Andrew-liu/snow-x-assistant](https://github.com/Andrew-liu/snow-x-assistant) | MV3 | 页面已加载数据 + 逐条点击取关 | — | — | — |
+| [yaohongan/x-follower-lens](https://github.com/yaohongan/x-follower-lens) | MV3 | 页面已加载数据 + 本地粉丝数历史 | — | — | — |
+| [prathamdby/x-followers-monitor](https://github.com/prathamdby/x-followers-monitor) | Python + Playwright | cookie 注入 + GitHub Actions 每 6 小时跑 | — | — | 快照 diff |
+| [xmac11/twitter-unfollowers-detector](https://github.com/xmac11/twitter-unfollowers-detector) | Python 脚本 | 官方 API v2（要开发者账号） | — | — | followers.json 比对 |
+
+三类技术路线：① 借浏览器登录态直接打内部接口（本项目、x-follow-checker）；② 只读页面已渲染的数据，
+零额外请求（互关标记、snow-x-assistant）；③ 自带 cookie / API key 的独立脚本（两个 Python 项目）。
+
+**没人做「每日 400 个额度」这件事**——这是本项目独有的：它们要么只管关系不管频率，
+要么把「别关注太快」写进 README 当免责声明。额度这块的规则、时区和误差分析见
+[docs/api-verification.md 第十四节](docs/api-verification.md)。
 
 ## 读写边界
 
@@ -153,27 +220,35 @@ Edge 同理，地址换成 `edge://extensions/`。
 - **互动榜只看得到通知流里还有的历史**：X 不按时间倒着无限给，实测一个账号翻到 371 条就到底（覆盖 26 天）。所以榜单是「最近这段时间谁跟你互动最多」，不是终身累计，面板底部会写清覆盖范围
 - **互动榜只算他 → 你的方向**：回复、点赞、转发、@你、关注你。你 → 他的方向拿不到——`statuses/user_timeline.json` 和 `favorites/list.json` 都已失效（见上表），没有可靠数据源
 - 互动数据**只存在内存里**，关掉侧边栏就没了，重开要点一次「扫互动」；关注/粉丝快照才会存进 IndexedDB
+- **额度是本机记账，不是 X 的计数**：手机上/别的浏览器里关注的看不到，只能靠下次扫描补记（时间落到扫描时刻）；页面里少数 A/B 入口可能漏记。所以留了「标记已满 / 今日清零 / 校准为 N」三个兜底
+- **官方没公布「一天」的时区**：默认美西 0 点，可切滚动 24 小时。两种口径在边界上会差几个小时
 - **沉默号只能覆盖一部分人**：GraphQL 不返回最后发帖时间，只有旧接口 `following/list.json` 带 `status.created_at`，而它最多给约 500 个关注。所以只有这部分人有真实的「最后发帖 N 天」，其余显示「最后发帖时间未知」，单独一档可查，不会把正常人当死号。零推文号（`tweet_counts.tweets = 0`）能准确判定，「零推文」一档是全量的
 
 ## 开发
 
 ```bash
-# 核心逻辑单测（43 个用例，含实测账号数据回归）
-node --test tests/core.test.mjs
+# 单测（67 个用例，含实测账号数据回归 + 美西时区/夏令时边界）
+node --test "tests/**/*.test.mjs"
+# 或分开跑
+node --test tests/core.test.mjs    # 分类 / 互动 / 沉默 / 额度 58 个
+node --test tests/inject.test.mjs  # 关注/取关嗅探方向判断 9 个
 
 # UI 本地预览（伪造 chrome API + 假数据，不需要装扩展）
 python -m http.server 8765 --bind 127.0.0.1
 # 打开 http://127.0.0.1:8765/dev/preview.html
+
+# 无头 Chrome 截图 + 交互自检（需要本机装了 Chrome）
+node dev/shot.cjs http://127.0.0.1:8765/dev/preview.html /tmp/shot.png
 ```
 
 目录：
 
 ```
 manifest.json      扩展清单
-background.js      打开侧边栏
+background.js      打开侧边栏 + 关注/取关记账（串行写 storage，避免多标签页互相覆盖）
 content.js         在 x.com 页面里发 GraphQL / REST 请求（无 ES module）
-inject.js          跑在页面 MAIN world，抄下页面自己用的 GraphQL queryId（只读，不发请求）
-lib/core.js        纯逻辑：分类 / 互动排行 / 沉默分档 / diff / CSV（不依赖 chrome，可单测）
+inject.js          跑在页面 MAIN world，抄 GraphQL queryId + 嗅探关注/取关动作（只读，不发请求）
+lib/core.js        纯逻辑：分类 / 互动排行 / 沉默分档 / 额度与美西时区 / diff / CSV（不依赖 chrome，可单测）
 lib/db.js          IndexedDB 快照存储
 sidepanel/         侧边栏 UI
 dev/               本地预览用，打包时排除
@@ -190,7 +265,7 @@ python - <<'PY'
 import zipfile, pathlib
 root = pathlib.Path(".")
 skip = {"dev", "tests", "dist", "node_modules", ".git"}
-with zipfile.ZipFile("dist/x-mutual-check-0.5.1.zip", "w", zipfile.ZIP_DEFLATED) as z:
+with zipfile.ZipFile("dist/x-mutual-check-0.6.0.zip", "w", zipfile.ZIP_DEFLATED) as z:
     for p in root.rglob("*"):
         if p.is_dir() or p.suffix == ".zip" or p.suffix == ".md":
             continue

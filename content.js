@@ -560,6 +560,42 @@
     return { following: false, verified: confirmed === false };
   }
 
+  /**
+   * 关注 / 取关动作 → 记账（每日关注额度）。
+   *
+   * inject.js 只负责在 MAIN world 判断方向并 postMessage，这里做去重后交给 background 落盘：
+   * - 同一 uid 同一动作 8 秒内只记一次（X 有时会重发同一个请求）
+   * - uid 拿不到的，退化成 5 秒时间桶，防止一次点击被记成多笔
+   * 这里不判断额度、不算账，纯搬运，算账在 lib/core.js 的 quotaStats 里。
+   */
+  let lastFollowKey = "";
+  let lastFollowAt = 0;
+
+  function reportFollowEvent(action, uid) {
+    const me = viewerId();
+    if (!me) return;
+    if (action !== "follow" && action !== "unfollow" && action !== "cap") return;
+
+    const now = Date.now();
+    const key = action + ":" + (uid || Math.floor(now / 5000));
+    if (key === lastFollowKey && now - lastFollowAt < 8000) return;
+    lastFollowKey = key;
+    lastFollowAt = now;
+
+    try {
+      chrome.runtime.sendMessage(
+        { type: "XMC_LOG_FOLLOW", userId: me, events: [{ t: now, a: action, u: String(uid || ""), s: "page" }] },
+        () => void chrome.runtime.lastError
+      );
+    } catch (e) {}
+  }
+
+  window.addEventListener("message", (ev) => {
+    if (ev.source !== window || !ev.data || ev.data.__xmc !== 1) return;
+    if (ev.data.kind === "follow") reportFollowEvent(ev.data.action, ev.data.uid);
+    else if (ev.data.kind === "cap") reportFollowEvent("cap", "");
+  });
+
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || !msg.type) return;
 

@@ -21,6 +21,14 @@ import {
   sortByStale,
   STALE_BUCKETS,
   INTERACT_KINDS,
+  quotaStats,
+  formatMs,
+  ptParts,
+  ptDayKey,
+  ptDayStart,
+  toDailyCsv,
+  ratioInfo,
+  FOLLOW_DAY_LIMIT,
 } from "../lib/core.js";
 import { saveSnapshot, listSnapshots } from "../lib/db.js";
 
@@ -28,6 +36,25 @@ const $ = (id) => document.getElementById(id);
 const el = {
   account: $("account"),
   recheck: $("recheck"),
+  quota: $("quota"),
+  qLeft: $("qLeft"),
+  qLimit: $("qLimit"),
+  qFill: $("qFill"),
+  qUsed: $("qUsed"),
+  qReset: $("qReset"),
+  qUnf: $("qUnf"),
+  qToggle: $("qToggle"),
+  qDetail: $("qDetail"),
+  qChart: $("qChart"),
+  qRatio: $("qRatio"),
+  qMode: $("qMode"),
+  qCap: $("qCap"),
+  qClear: $("qClear"),
+  qExport: $("qExport"),
+  qPeak: $("qPeak"),
+  qSetVal: $("qSetVal"),
+  qSetBtn: $("qSetBtn"),
+  qHelp: $("qHelp"),
   withFollowers: $("withFollowers"),
   scanBtn: $("scanBtn"),
   intelBtn: $("intelBtn"),
@@ -168,6 +195,246 @@ async function ensureContent(tabId) {
   return await ping(tabId);
 }
 
+/* ---------- 每日关注额度 ---------- */
+
+/**
+ * X 每天最多关注 400 个。官方只说「per day」，没写时区——
+ * 这里默认按美西（X 总部时区）0 点切日，也可以在明细里换成滚动 24 小时。
+ *
+ * 记账有三个来源，全部汇总到 chrome.storage.local 的 xmc:followlog:<账号ID>：
+ *   page   页面里点的关注（inject.js 嗅探请求方向）
+ *   panel  这个面板里点的「+ 关注」
+ *   scan   扫描时对比上次快照补记的（覆盖手机上关注的那部分）
+ *   manual 手动校准
+ * 算账的逻辑在 lib/core.js 的 quotaStats，这里只管展示和交互。
+ */
+const QUOTA_PREFIX = "xmc:followlog:";
+const QUOTA_MODE_KEY = "xmc:quota-mode";
+
+const quota = { events: [], stats: null, mode: "pt", dayKey: null, expanded: false };
+
+const SRC_LABEL = { panel: "面板关注", page: "页面点击", scan: "扫描补记", manual: "手动校准" };
+
+function quotaMode() {
+  return quota.mode === "rolling" ? "rolling" : "pt";
+}
+
+async function loadQuotaMode() {
+  try {
+    const got = await chrome.storage.local.get(QUOTA_MODE_KEY);
+    quota.mode = got[QUOTA_MODE_KEY] === "rolling" ? "rolling" : "pt";
+  } catch (e) {
+    quota.mode = "pt";
+  }
+  el.qMode.value = quota.mode;
+}
+
+async function loadQuota() {
+  if (!state.userId) return;
+  const key = QUOTA_PREFIX + state.userId;
+  let events = [];
+  try {
+    const got = await chrome.storage.local.get(key);
+    events = Array.isArray(got[key]) ? got[key] : [];
+  } catch (e) {
+    events = [];
+  }
+  quota.events = events;
+  recomputeQuota();
+}
+
+function ratioSource() {
+  const s = state.result && state.result.stats;
+  if (!s) return null;
+  return { following: s.following || 0, followers: s.followers || 0 };
+}
+
+function recomputeQuota() {
+  const now = Date.now();
+  quota.stats = quotaStats(quota.events, { now, mode: quotaMode(), ratio: ratioSource() });
+  quota.dayKey = quota.stats.dayKey;
+  renderQuota();
+}
+
+function renderQuotaCountdown() {
+  const s = quota.stats;
+  if (!s) return;
+  if (s.mode === "rolling") {
+    if (s.capped) {
+      el.qReset.textContent = "已标记到上限";
+      el.qReset.title = "滚动口径下没有固定重置点；点「今日清零」或等最早那笔关注满 24 小时再试";
+      return;
+    }
+    if (!s.resetAt) {
+      el.qReset.textContent = "近 24 小时没有关注";
+      el.qReset.title = "滚动口径下，只有当最早的一笔关注满 24 小时才会腾出额度";
+      return;
+    }
+    el.qReset.textContent = `${formatMs(s.msLeft)} 后开始回补`;
+    el.qReset.title = "滚动 24 小时口径：最早那笔关注过期时才会腾出一个额度";
+    return;
+  }
+  // 重置点本身就在美西 0 点，用 ptParts 取它自己的日期，别用本机时区算
+  const p = ptParts(s.end);
+  const mm = String(p.m).padStart(2, "0");
+  const dd = String(p.d).padStart(2, "0");
+  el.qReset.textContent = `${formatMs(s.msLeft)} 后重置`;
+  el.qReset.title = `美西 ${mm}-${dd} 00:00 重置（北京时间当天 15~16 点）`;
+}
+
+function renderQuota() {
+  const s = quota.stats;
+  if (!s) {
+    el.qLeft.textContent = "—";
+    el.qLimit.textContent = "/ " + FOLLOW_DAY_LIMIT;
+    el.qReset.textContent = "等待连接 x.com";
+    return;
+  }
+  el.qLimit.textContent = "/ " + s.limit;
+  el.qLeft.textContent = s.capped ? "0" : String(s.remaining);
+  el.qUsed.textContent = `已关注 ${s.used}`;
+  el.qUnf.textContent = `取关 ${s.unfollows}`;
+  el.qFill.style.width = Math.min(100, Math.round((s.used / s.limit) * 100)) + "%";
+  el.quota.classList.toggle("warn", s.capped || s.used >= s.limit * 0.8);
+  el.quota.title = s.capped ? "今天已经到上限了（X 提示过不能再关注）" : "本机记录的今日关注数，不是 X 服务端计数";
+  renderQuotaCountdown();
+  if (quota.expanded) renderQuotaDetail();
+}
+
+function renderQuotaChart() {
+  const s = quota.stats;
+  el.qChart.innerHTML = "";
+  if (!s) return;
+  const max = Math.max(1, ...s.days.map((d) => d.follows));
+  for (const d of s.days) {
+    const b = document.createElement("div");
+    b.className = "qb" + (d.key === s.dayKey ? " today" : "");
+    b.title = `${d.key}：关注 ${d.follows}${d.unfollows ? ` · 取关 ${d.unfollows}` : ""}${d.capped ? " · 触及上限" : ""}`;
+    const i = document.createElement("i");
+    if (d.follows) i.style.height = Math.max(3, Math.round((d.follows / max) * 46)) + "px";
+    else i.className = "zero";
+    if (!d.follows) i.style.height = "2px";
+    b.appendChild(i);
+    el.qChart.appendChild(b);
+  }
+  el.qPeak.textContent = max > 1 ? `最多 ${max} 个/天` : "";
+}
+
+function ratioText(r, hasFollowers) {
+  if (!r) return "";
+  if (!hasFollowers) return `关注 ${r.following} 个。粉丝数这次没扫到，粉丝比限制算不了——勾上「同时拉取粉丝列表」再扫一次就有了。`;
+  if (r.level === "ok") {
+    return `关注 ${r.following} 个，离 5000 这个硬线还有 ${r.gap} 个。到 5000 之后才按「粉丝/关注」比限流。`;
+  }
+  if (r.level === "ratio") {
+    return `关注 ${r.following} 个，已过 5000：粉丝 ${r.followers}，按社区经验值（粉丝×1.1）估算还能关注约 ${r.gap} 个。X 不公布具体比例，这条只是估算。`;
+  }
+  return `关注 ${r.following} 个，粉丝 ${r.followers}，已经碰到比例上限的估算值——想继续关注得先涨粉，或者取关一些。`;
+}
+
+function helpText(s) {
+  const bits = Object.entries(s.bySrc || {})
+    .filter(([k, v]) => v > 0 && k !== "manual")
+    .map(([k, v]) => `${SRC_LABEL[k] || k} ${v}`);
+  const srcLine = bits.length ? `今天这笔账：${bits.join(" · ")}。` : "";
+  const manual = (s.bySrc && s.bySrc.manual) || 0;
+  return (
+    `<b>${srcLine}</b>` +
+    (manual ? `其中 ${manual} 个是手动校准填的。` : "") +
+    "数据只记在本机：面板里点的、x.com 页面上点的关注都会记（方向以接口返回为准，拿不准的不记）。" +
+    "手机上、别的浏览器里关注的看不到，只能靠下次扫描对比快照补记，时间会落在扫描那一刻，所以和 X 的真实计数会有偏差——差得多就用下面「校准为」改一下。" +
+    "官方只说「每天 400 个」没说时区，这里默认美西 0 点切日。"
+  );
+}
+
+function renderQuotaDetail() {
+  const s = quota.stats;
+  if (!s) return;
+  renderQuotaChart();
+  if (!state.result) {
+    el.qRatio.hidden = true;
+    el.qRatio.textContent = "";
+  } else {
+    const st = state.result.stats;
+    const hasFollowers = !!st.followers;
+    el.qRatio.hidden = false;
+    el.qRatio.textContent = ratioText(ratioInfo(st.following, st.followers || 0), hasFollowers);
+  }
+  el.qHelp.innerHTML = helpText(s);
+}
+
+function currentWindowStart() {
+  return quotaMode() === "rolling" ? Date.now() - 86400000 : ptDayStart(Date.now());
+}
+
+/** 发一笔事件给后台记账（后台串行写入，避免多个标签页互相覆盖）。 */
+function pushQuotaEvents(events) {
+  if (!state.userId || !events || !events.length) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: "XMC_LOG_FOLLOW", userId: state.userId, events }, (res) => {
+      void chrome.runtime.lastError;
+      resolve(!!(res && res.ok));
+    });
+  });
+}
+
+/** 整份覆盖（清零 / 校准用）。 */
+function setQuotaEvents(events) {
+  if (!state.userId) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: "XMC_SET_LOG", userId: state.userId, events }, (res) => {
+      void chrome.runtime.lastError;
+      resolve(!!(res && res.ok));
+    });
+  });
+}
+
+/** 清掉当前窗口内的关注记录（cap 标记也一起清，否则上限还在）。 */
+function withoutCurrentWindow(events) {
+  const start = currentWindowStart();
+  return (events || []).filter((e) => !(e && e.t >= start && (e.a === "follow" || e.a === "cap")));
+}
+
+/**
+ * 扫描后把「新出现的关注」补记到今天的账上。
+ *
+ * 为什么不总是补：两次扫描隔了几天时，中间新增的关注没法拆到每一天，
+ * 全塞进今天会把额度算爆（还以为你今天关注了 200 个）。所以只在间隔 20 小时内补，
+ * 时间只能记成「扫描这一刻」——粒度到扫描，不到分钟。
+ */
+async function logScanDelta(prev, result) {
+  if (!prev || !Number.isFinite(prev.ts) || !result) return { added: 0, skipped: 0 };
+  const gap = Date.now() - prev.ts;
+  const prevFol = prev.following || [];
+  const prevSet = new Set(prevFol.map((u) => String(u.sn || "").toLowerCase()));
+  const nextSet = new Set(result.following.map((u) => String(u.sn || "").toLowerCase()));
+  const added = result.following.filter((u) => !prevSet.has(String(u.sn || "").toLowerCase()));
+  const gone = prevFol.filter((u) => !nextSet.has(String(u.sn || "").toLowerCase()));
+
+  if (gap > 20 * 3600000) return { added: 0, skipped: added.length + gone.length };
+  if (!added.length && !gone.length) return { added: 0, skipped: 0 };
+
+  // 页面上点过的关注已经实时记过账了，别在这里重复记一遍
+  const seen = new Set(
+    (quota.events || []).filter((e) => e && e.a === "follow" && e.u).map((e) => String(e.u))
+  );
+  const now = Date.now();
+  const events = [];
+  let dup = 0;
+  for (const u of added) {
+    if (u.id && seen.has(String(u.id))) {
+      dup++;
+      continue;
+    }
+    events.push({ t: now, a: "follow", u: u.id || "", s: "scan" });
+  }
+  for (const u of gone) events.push({ t: now, a: "unfollow", u: u.id || "", s: "scan" });
+  if (!events.length) return { added: 0, skipped: 0, dup };
+  const ok = await pushQuotaEvents(events);
+  if (ok) await loadQuota();
+  return { added: added.length - dup, skipped: 0, dup };
+}
+
 /* ---------- 扫描 ---------- */
 
 function showProgress(on) {
@@ -278,6 +545,10 @@ async function startScan() {
     const prev = snaps[0] || null;
     const changes = prev ? diffSnapshots(prev, { following: result.following, followers: result.followers }) : null;
 
+    // 顺手把「上次扫描之后新增的关注」补进今日额度（覆盖在手机/别的浏览器上关注的那部分）
+    await loadQuota();
+    const delta = await logScanDelta(prev, result);
+
     const snapshot = {
       userId,
       ts: Date.now(),
@@ -299,8 +570,10 @@ async function startScan() {
     renderAll();
     showProgress(false);
 
-    const tip = `扫描完成：关注 ${result.stats.following} · 互关 ${result.stats.mutual} · 未回关 ${result.stats.notBack}`;
-    toast(tip, 3000);
+    const tip =
+      `扫描完成：关注 ${result.stats.following} · 互关 ${result.stats.mutual} · 未回关 ${result.stats.notBack}` +
+      (delta.added ? ` · 新关注 ${delta.added} 计入今日` : "");
+    toast(tip, delta.added ? 4000 : 3000);
     if (fansError === "RATE_LIMITED" || fansError === "GQL_404") {
       setHint(
         "粉丝列表这次没扫到（X 的读接口限流了，表现是先密集 404 再 429）。关注侧数据已经出来了，可以先看未回关名单；纯粉丝、掉粉和互关率等 10~15 分钟后再扫一次就能补上。",
@@ -310,6 +583,11 @@ async function startScan() {
       setHint("粉丝列表扫描失败（" + fansError + "），先按关注列表出结果。", true);
     } else if (!fans && !withFans) {
       setHint("本次未拉粉丝列表，所以纯粉丝和掉粉统计为空。", false);
+    } else if (delta.skipped) {
+      setHint(
+        `距上次扫描超过 20 小时，中间新增的 ${delta.skipped} 个关注没法拆到具体哪一天，本次没有计入今日额度（避免把几天的量都算到今天）。想算准就每天扫一次，或者在上面的额度明细里手动「校准为」。`,
+        false
+      );
     } else if (state.statusCovered && state.statusCovered < result.stats.following) {
       setHint(
         `沉默号只覆盖 ${state.statusCovered}/${result.stats.following} 人：X 只有旧接口带「最后发帖时间」，它最多给约 500 个关注。其余人的最后发帖时间显示为未知，可点「时间未知」档查看。`,
@@ -621,8 +899,15 @@ async function followUser(u, btn) {
   state.followed.add(u.sn);
   btn.classList.add("done");
   btn.textContent = "已关注";
+
+  // 记账：面板里点的关注最准，直接记一笔
+  await pushQuotaEvents([{ t: Date.now(), a: "follow", u: u.id || "", s: "panel" }]);
+  await loadQuota();
+
   if (r.verified === false) toast(`已提交关注 @${u.sn}，但状态没核对上，去 x.com 看一眼`, 4200);
-  else toast(`已关注 @${u.sn}，下次扫描会归入互关`, 2800);
+  else if (quota.stats && !quota.stats.capped && quota.stats.remaining <= 20) {
+    toast(`已关注 @${u.sn}。今天还剩 ${quota.stats.remaining} 个额度，慢一点`, 3800);
+  } else toast(`已关注 @${u.sn}，下次扫描会归入互关`, 2800);
 }
 
 async function unfollowUser(u, btn) {
@@ -1029,6 +1314,8 @@ function renderAll() {
   syncFilterUI();
   renderList();
   renderFooter();
+  // 额度卡也要跟着刷新：粉丝数变化会影响「5000 / 粉丝比」那段提示
+  renderQuota();
 }
 
 /* ---------- 导出 ---------- */
@@ -1124,7 +1411,107 @@ async function boot() {
     if (el.list.scrollTop + el.list.clientHeight >= el.list.scrollHeight - 160) appendChunk();
   });
 
+  /* ---- 每日额度：展开 / 口径 / 校准 / 导出 ---- */
+
+  el.qToggle.addEventListener("click", () => {
+    quota.expanded = !quota.expanded;
+    el.qDetail.hidden = !quota.expanded;
+    el.qToggle.textContent = quota.expanded ? "收起" : "明细";
+    el.qToggle.setAttribute("aria-expanded", String(quota.expanded));
+    if (quota.expanded) renderQuotaDetail();
+  });
+
+  el.qMode.addEventListener("change", async (e) => {
+    quota.mode = e.target.value === "rolling" ? "rolling" : "pt";
+    try {
+      await chrome.storage.local.set({ [QUOTA_MODE_KEY]: quota.mode });
+    } catch (err) {}
+    recomputeQuota();
+    toast(quota.mode === "rolling" ? "改成按滚动 24 小时统计" : "改成按美西 0 点切日");
+  });
+
+  el.qCap.addEventListener("click", async () => {
+    if (!state.userId) {
+      toast("先打开 x.com 让插件连上账号");
+      return;
+    }
+    // cap 是「X 明确说不能再关注了」——比数数准，出现就当今天满了
+    await pushQuotaEvents([{ t: Date.now(), a: "cap", u: "", s: "manual" }]);
+    await loadQuota();
+    toast("已标记今天到上限，过了重置点会自动恢复");
+  });
+
+  el.qClear.addEventListener("click", async () => {
+    if (!state.userId) return;
+    await setQuotaEvents(withoutCurrentWindow(quota.events));
+    await loadQuota();
+    toast("今天记的关注数已清零（历史保留）");
+  });
+
+  el.qSetBtn.addEventListener("click", async () => {
+    if (!state.userId) {
+      toast("先打开 x.com 让插件连上账号");
+      return;
+    }
+    const raw = String(el.qSetVal.value || "").trim();
+    if (!raw) {
+      toast("先填一个 0~400 的数字");
+      return;
+    }
+    const n = Math.max(0, Math.min(FOLLOW_DAY_LIMIT, Math.round(Number(raw))));
+    if (!Number.isFinite(n)) {
+      toast("填的看不懂，重来");
+      return;
+    }
+    const base = withoutCurrentWindow(quota.events);
+    const now = Date.now();
+    const fill = [];
+    for (let i = 0; i < n; i++) fill.push({ t: now, a: "follow", u: "", s: "manual" });
+    await setQuotaEvents(base.concat(fill));
+    await loadQuota();
+    el.qSetVal.value = "";
+    toast(`今日已用校准为 ${n}，还剩 ${quota.stats ? quota.stats.remaining : "—"}`);
+  });
+
+  el.qExport.addEventListener("click", () => {
+    if (!quota.stats) {
+      toast("还没有数据");
+      return;
+    }
+    const csv = toDailyCsv(quota.stats);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `X_每日关注_${stamp()}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast("已导出近 14 天");
+  });
+
+  // 内容脚本在别的标签页记账后，这里跟着刷新（不用手动点）
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !state.userId) return;
+    if (changes[QUOTA_PREFIX + state.userId]) loadQuota();
+  });
+
+  setInterval(tickQuota, 1000);
+
+  await loadQuotaMode();
   await detect();
+}
+
+/** 每秒跑一次：只更新倒计时；跨过美西 0 点就整块重算（新的一天从 0 开始）。 */
+function tickQuota() {
+  const s = quota.stats;
+  if (!s) return;
+  const now = Date.now();
+  if (s.mode === "pt" && ptDayKey(now) !== quota.dayKey) {
+    recomputeQuota();
+    return;
+  }
+  if (s.resetAt) s.msLeft = Math.max(0, s.resetAt - now);
+  renderQuotaCountdown();
 }
 
 /** 切 tab：顺手把排序切到这个 tab 更合适的那档。 */
@@ -1182,6 +1569,8 @@ async function detect() {
   el.scanBtn.disabled = false;
   el.intelBtn.disabled = false;
   setHint("");
+
+  await loadQuota();
 
   // 已有快照就直接渲染，不用每次重扫
   if (state.userId) {

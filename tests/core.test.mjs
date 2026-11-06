@@ -30,6 +30,14 @@ import {
   staleStats,
   sortByStale,
   STALE_BUCKETS,
+  ptDayKey,
+  ptDayStart,
+  ptNextStart,
+  formatMs,
+  quotaStats,
+  ratioInfo,
+  appendEvents,
+  toDailyCsv,
 } from "../lib/core.js";
 
 const raw = (sn, extra = {}) => ({
@@ -564,4 +572,177 @@ test("staleStats 把时间未知的人单独计数，不混进「已沉默」", 
   assert.equal(s.unknown, 1);
   assert.equal(s.none, 1);
   assert.equal(s.known, 1);
+});
+
+/* ==================== 每日关注额度（美西日界线） ==================== */
+
+const T = (s) => Date.parse(s);
+
+test("ptDayKey 按美西切日，UTC 早上 8 点才是当地的 0 点", () => {
+  assert.equal(ptDayKey(T("2026-11-06T07:59:59Z")), "2026-11-05");
+  assert.equal(ptDayKey(T("2026-11-06T08:00:00Z")), "2026-11-06");
+  // 北京时间 11-06 09:45 = 美西 11-05 17:45，这两天不能混
+  assert.equal(ptDayKey(T("2026-11-06T01:45:00Z")), "2026-11-05");
+});
+
+test("ptDayStart / ptNextStart 在夏令时前后偏移不同", () => {
+  // 冬令时 PST：当地 0 点 = UTC 08:00
+  assert.equal(ptDayStart(T("2026-11-06T12:00:00Z")), T("2026-11-06T08:00:00Z"));
+  // 夏令时 PDT：当地 0 点 = UTC 07:00
+  assert.equal(ptDayStart(T("2026-07-15T12:00:00Z")), T("2026-07-15T07:00:00Z"));
+});
+
+test("春季跳表那天只有 23 小时，额度也按这个算", () => {
+  const mid = T("2026-03-08T12:00:00Z"); // 当地 05:00 PDT
+  const start = ptDayStart(mid);
+  const next = ptNextStart(mid);
+  assert.equal(start, T("2026-03-08T08:00:00Z"));
+  assert.equal(next, T("2026-03-09T07:00:00Z"));
+  assert.equal((next - start) / 3600000, 23);
+});
+
+test("秋季回表那天 25 小时，倒计时不会错一小时", () => {
+  const mid = T("2026-11-01T12:00:00Z");
+  const start = ptDayStart(mid);
+  const next = ptNextStart(mid);
+  assert.equal(start, T("2026-11-01T07:00:00Z"));
+  assert.equal(next, T("2026-11-02T08:00:00Z"));
+  assert.equal((next - start) / 3600000, 25);
+});
+
+test("quotaStats 只统计当天窗口内的关注，跨日的算昨天", () => {
+  const now = T("2026-11-06T10:00:00Z"); // 当地 02:00
+  const st = quotaStats(
+    [
+      { t: T("2026-11-06T07:00:00Z"), a: "follow", s: "page" }, // 当地 11-05 23:00
+      { t: T("2026-11-06T08:30:00Z"), a: "follow", s: "page" }, // 当地 11-06 00:30
+      { t: T("2026-11-06T09:00:00Z"), a: "follow", s: "panel" },
+    ],
+    { now }
+  );
+  assert.equal(st.used, 2);
+  assert.equal(st.remaining, 398);
+  assert.equal(st.rollingUsed, 3);
+  assert.deepEqual(st.bySrc, { page: 1, panel: 1 });
+  assert.equal(st.dayKey, "2026-11-06");
+});
+
+test("quotaStats 取关单独计数，不抵消关注额度", () => {
+  const now = T("2026-11-06T10:00:00Z");
+  const st = quotaStats(
+    [
+      { t: now - 3600000, a: "follow" },
+      { t: now - 1800000, a: "unfollow" },
+      { t: now - 900000, a: "unfollow" },
+    ],
+    { now }
+  );
+  assert.equal(st.used, 1);
+  assert.equal(st.unfollows, 2);
+  assert.equal(st.remaining, 399);
+});
+
+test("cap 事件直接把剩余压到 0（X 说不能再关注了）", () => {
+  const now = T("2026-11-06T10:00:00Z");
+  const st = quotaStats([{ t: now - 60000, a: "follow" }, { t: now - 30000, a: "cap" }], { now });
+  assert.equal(st.capped, true);
+  assert.equal(st.remaining, 0);
+  // 第二天 cap 失效
+  const next = quotaStats([{ t: now - 30000, a: "cap" }], { now: now + 25 * 3600000 });
+  assert.equal(next.capped, false);
+  assert.equal(next.remaining, 400);
+});
+
+test("used 超过 400 时剩余是 0，不会变成负数", () => {
+  // 取当地时间 23:00（额度还没到重置点），往前 450 分钟都还在同一天里
+  const now = T("2026-11-07T07:00:00Z");
+  const events = Array.from({ length: 450 }, (_, i) => ({ t: now - (i + 1) * 60000, a: "follow" }));
+  const st = quotaStats(events, { now });
+  assert.equal(st.used, 450);
+  assert.equal(st.remaining, 0);
+});
+
+test("未来时间戳的事件不计入（时钟回拨的防御）", () => {
+  const now = T("2026-11-06T10:00:00Z");
+  const st = quotaStats([{ t: now + 3600000, a: "follow" }], { now });
+  assert.equal(st.used, 0);
+});
+
+test("days 是连续 14 天，最后一天是今天，空档补 0", () => {
+  const now = T("2026-11-06T10:00:00Z");
+  const st = quotaStats([{ t: now - 2 * 86400000, a: "follow" }], { now });
+  assert.equal(st.days.length, 14);
+  assert.equal(st.days[13].key, "2026-11-06");
+  assert.equal(st.days[0].key, "2026-10-24");
+  assert.equal(st.days.every((d, i, a) => i === 0 || d.start > a[i - 1].start), true);
+  assert.equal(st.days.find((d) => d.key === "2026-11-04").follows, 1);
+  assert.equal(st.days[13].follows, 0);
+});
+
+test("rolling 模式下窗口是最近 24 小时，重置点是那笔过期的时刻", () => {
+  const now = T("2026-11-06T10:00:00Z");
+  const old = now - 20 * 3600000;
+  const st = quotaStats([{ t: old, a: "follow" }], { now, mode: "rolling" });
+  assert.equal(st.used, 1);
+  assert.equal(st.resetAt, old + 86400000);
+  assert.equal(st.msLeft, 4 * 3600000);
+  // 超过 24 小时的那笔不算
+  const st2 = quotaStats([{ t: now - 25 * 3600000, a: "follow" }], { now, mode: "rolling" });
+  assert.equal(st2.used, 0);
+  assert.equal(st2.resetAt, null);
+});
+
+test("ratioInfo 5000 以内给准确硬线，超过后只给估算", () => {
+  const ok = ratioInfo(1418, 900);
+  assert.equal(ok.level, "ok");
+  assert.equal(ok.gap, 5000 - 1418);
+  assert.equal(ok.estimated, false);
+
+  // 已过 5000，但粉丝够多：还在估算天花板的下面
+  const ratio = ratioInfo(5200, 5000);
+  assert.equal(ratio.level, "ratio");
+  assert.equal(ratio.ceiling, 5500); // 5000 × 1.1
+  assert.equal(ratio.gap, 300);
+  assert.equal(ratio.estimated, true);
+
+  const capped = ratioInfo(6000, 500);
+  assert.equal(capped.level, "capped");
+  assert.equal(capped.gap, 0);
+});
+
+test("formatMs 输出 h:mm:ss 且不出现负数", () => {
+  assert.equal(formatMs(0), "0:00:00");
+  assert.equal(formatMs(61000), "0:01:01");
+  assert.equal(formatMs(3600000 * 8 + 60000 * 24 + 13000), "8:24:13");
+  assert.equal(formatMs(-5000), "0:00:00");
+});
+
+test("appendEvents 裁掉过期事件、按时间排序、守住上限", () => {
+  const now = T("2026-11-06T10:00:00Z");
+  const log = [
+    { t: now - 100000, a: "follow" },
+    { t: now - 50 * 86400000, a: "follow" }, // 超过 45 天，丢掉
+  ];
+  const out = appendEvents(log, [{ t: now - 10000, a: "unfollow" }], { now });
+  assert.equal(out.length, 2);
+  assert.equal(out[1].a, "unfollow");
+
+  const many = Array.from({ length: 30 }, (_, i) => ({ t: now - i * 1000, a: "follow" }));
+  const capped = appendEvents([], many, { now, max: 10 });
+  assert.equal(capped.length, 10);
+  assert.equal(capped[9].t, now); // 留最新的
+
+  // 脏数据不能进日志
+  assert.equal(appendEvents([], [{ t: now, a: "" }, { a: "follow" }, null], { now }).length, 0);
+});
+
+test("toDailyCsv 带 BOM、表头正确、今天那行有备注", () => {
+  const now = T("2026-11-06T10:00:00Z");
+  const st = quotaStats([{ t: now - 60000, a: "follow" }], { now });
+  const csv = toDailyCsv(st, now);
+  assert.ok(csv.startsWith("\uFEFF日期,新关注,取关,触及上限,备注"));
+  const lines = csv.trim().split("\r\n");
+  assert.equal(lines.length, 15); // 表头 + 14 天
+  assert.ok(lines[14].startsWith("2026-11-06,1,0,否"));
+  assert.ok(lines[14].includes("已用 1/400"));
 });

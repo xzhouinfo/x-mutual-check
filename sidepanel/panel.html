@@ -17,6 +17,42 @@
     <button id="recheck" class="icon-btn" title="重新检测页面状态">⟳</button>
   </header>
 
+  <section class="quota" id="quota">
+    <div class="q-top">
+      <span class="q-label">今日还能关注</span>
+      <span class="q-num"><b id="qLeft">—</b><i id="qLimit">/ 400</i></span>
+      <button id="qToggle" class="q-toggle" aria-expanded="false" title="展开每日明细 / 校准">明细</button>
+    </div>
+    <div class="q-bar"><span id="qFill"></span></div>
+    <div class="q-meta">
+      <span id="qUsed">已关注 0</span>
+      <span class="q-dot">·</span>
+      <span id="qReset">重置倒计时 —</span>
+      <span class="q-dot">·</span>
+      <span id="qUnf">取关 0</span>
+    </div>
+
+    <div class="q-detail" id="qDetail" hidden>
+      <div class="q-chart" id="qChart"></div>
+      <p class="q-caption"><span>近 14 天（美西日）</span><span id="qPeak"></span></p>
+      <p class="q-ratio" id="qRatio" hidden></p>
+      <div class="q-actions">
+        <select id="qMode" class="mini-select" title="按哪个口径切「一天」">
+          <option value="pt">美西 0 点重置</option>
+          <option value="rolling">滚动 24 小时</option>
+        </select>
+        <button id="qCap" class="ghost" title="X 提示「You are unable to follow more people at this time」时点这里">标记已满</button>
+        <button id="qClear" class="ghost" title="清掉今天记下的数字，不影响历史">今日清零</button>
+        <button id="qExport" class="ghost">导出</button>
+      </div>
+      <div class="q-actions">
+        <input id="qSetVal" class="q-input" type="number" min="0" max="400" step="1" placeholder="已用数量" />
+        <button id="qSetBtn" class="ghost" title="按你实际看到的数字校准今天">校准为</button>
+      </div>
+      <p class="q-help" id="qHelp"></p>
+    </div>
+  </section>
+
   <section class="scan-box">
     <label class="opt">
       <input type="checkbox" id="withFollowers" checked />

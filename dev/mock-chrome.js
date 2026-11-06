@@ -47,7 +47,68 @@
     followers.push(u);
   }
 
+  /* ---- 额度用的假 storage：内存里的 Map，带 onChanged 回调 ---- */
+  const store = new Map();
+  const storageListeners = [];
+  const storage = {
+    local: {
+      get: async (key) => {
+        const out = {};
+        if (typeof key === "string") {
+          if (store.has(key)) out[key] = store.get(key);
+        } else if (Array.isArray(key)) {
+          for (const k of key) if (store.has(k)) out[k] = store.get(k);
+        }
+        return out;
+      },
+      set: async (obj) => {
+        const changes = {};
+        for (const [k, v] of Object.entries(obj)) {
+          changes[k] = { oldValue: store.get(k), newValue: v };
+          store.set(k, v);
+        }
+        storageListeners.forEach((fn) => fn(changes, "local"));
+      },
+    },
+    onChanged: { addListener: (fn) => storageListeners.push(fn) },
+  };
+
+  // 预置近 14 天的关注记录：今天 37 笔（模拟页面点击 + 面板 + 扫描补记），前几天有多有少
+  // 用美西的「今天 0 点」对齐，否则在北京时间上午预览会看到「今日 0 次」
+  const PT_FMT = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    hourCycle: "h23",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const now = Date.now();
+  const clock = {};
+  for (const x of PT_FMT.formatToParts(new Date(now))) if (x.type !== "literal") clock[x.type] = x.value;
+  const elapsedToday = ((+clock.hour % 24) * 3600 + +clock.minute * 60 + +clock.second) * 1000;
+  const todayStart = now - elapsedToday;
+
+  const seed = [];
+  const history = [8, 0, 42, 17, 3, 96, 12, 0, 25, 60, 7, 31, 0];
+  history.forEach((n, i) => {
+    const base = todayStart - (history.length - i) * 86400000;
+    for (let k = 0; k < n; k++) {
+      seed.push({ t: base + 3600000 * (9 + (k % 8)), a: "follow", u: "17000" + i + k, s: k % 3 ? "page" : "scan" });
+    }
+  });
+  for (let k = 0; k < 37; k++) {
+    seed.push({
+      t: todayStart + Math.floor((elapsedToday * (k + 1)) / 39),
+      a: "follow",
+      u: "17009" + k,
+      s: k % 4 === 0 ? "panel" : k % 5 === 0 ? "scan" : "page",
+    });
+  }
+  seed.push({ t: todayStart + Math.floor(elapsedToday / 2), a: "unfollow", u: "99", s: "page" });
+  store.set("xmc:followlog:1234567890", seed);
+
   window.chrome = {
+    storage,
     runtime: {
       lastError: null,
       onMessage: { addListener() {} },
@@ -151,6 +212,20 @@
   window.chrome.runtime.onMessage.addListener = (fn) => window.chrome.runtime._listeners.push(fn);
   window.chrome.runtime.sendMessage = (msg, cb) => {
     window.chrome.runtime._listeners.forEach((fn) => fn(msg));
+    const key = "xmc:followlog:" + (msg && msg.userId);
+    if (msg && msg.type === "XMC_LOG_FOLLOW") {
+      const cur = store.get(key) || [];
+      store.set(key, cur.concat(msg.events || []));
+      storageListeners.forEach((fn) => fn({ [key]: { newValue: store.get(key) } }, "local"));
+      if (cb) cb({ ok: true, total: (store.get(key) || []).length });
+      return;
+    }
+    if (msg && msg.type === "XMC_SET_LOG") {
+      store.set(key, msg.events || []);
+      storageListeners.forEach((fn) => fn({ [key]: { newValue: store.get(key) } }, "local"));
+      if (cb) cb({ ok: true, total: (store.get(key) || []).length });
+      return;
+    }
     if (cb) cb();
   };
 })();

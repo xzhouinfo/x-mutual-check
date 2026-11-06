@@ -486,3 +486,102 @@ button { font-family: inherit; font-size: 12.5px; }
 
 /* 6 个 tab 挤在 400px 里：收一点左右内边距刚好放下，不用横向滚动 */
 .tabs button { padding-left: 7px; padding-right: 7px; }
+
+/* ==================== 每日关注额度 ==================== */
+
+.quota {
+  padding: 10px 14px 11px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.q-top { display: flex; align-items: baseline; gap: 6px; }
+.q-label { font-size: 11.5px; color: var(--text-2); }
+.q-num { margin-left: auto; display: flex; align-items: baseline; gap: 3px; }
+.q-num b {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.4px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.q-num i { font-style: normal; font-size: 11.5px; color: var(--text-3); }
+.q-toggle {
+  border: none;
+  background: none;
+  color: var(--text-3);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 0 0 0 6px;
+}
+.q-toggle:hover { color: var(--accent); }
+.q-caption {
+  display: flex;
+  justify-content: space-between;
+  margin: 5px 0 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.q-bar {
+  height: 5px;
+  margin: 6px 0 5px;
+  background: var(--surface-2);
+  border-radius: 99px;
+  overflow: hidden;
+}
+.q-bar span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 99px;
+  transition: width 0.3s ease, background 0.3s ease;
+}
+.quota.warn .q-num b { color: var(--warn); }
+.quota.warn .q-bar span { background: var(--warn); }
+
+.q-meta { display: flex; flex-wrap: wrap; gap: 5px; font-size: 11px; color: var(--text-3); }
+.q-dot { opacity: 0.5; }
+
+.q-detail { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+
+.q-chart { display: flex; align-items: flex-end; gap: 3px; height: 46px; }
+.q-chart .qb {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  cursor: default;
+}
+.q-chart .qb i {
+  display: block;
+  background: var(--accent);
+  opacity: 0.5;
+  border-radius: 2px 2px 0 0;
+}
+.q-chart .qb.today i { opacity: 1; }
+.q-chart .qb i.zero { background: var(--line); opacity: 1; }
+
+.q-ratio { margin: 8px 0 0; font-size: 11px; color: var(--text-2); }
+
+.q-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+.q-actions .ghost { padding: 5px 9px; font-size: 11.5px; }
+.q-input {
+  width: 78px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.q-input:focus { border-color: var(--accent); }
+
+.q-help { margin: 8px 0 0; font-size: 10.5px; line-height: 1.55; color: var(--text-3); }
+.q-help b { color: var(--text-2); font-weight: 600; }
