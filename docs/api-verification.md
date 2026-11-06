@@ -410,5 +410,64 @@ GraphQL mutation                   → 先按 op 名猜（Following=关注、Unf
 - 手机上、别的设备上关注的，插件看不到；只能靠下次扫描补记，且时间落点是扫描时刻
 - 扫描补记时，昨天深夜关注的会被算到今天（跨了美西 0 点）
 - 页面里有极少数关注入口可能不走这两个端点（比如某些 A/B 实验的路径），会漏记
-- 所以界面上留了两个兜底：`标记已满`（等价于 cap，再点一次取消）、`实际已用 → 校准`
-  （把当天窗口的 follow 事件重写成 N 条 manual；填 0 就等于原来的「今日清零」，所以那个按钮删掉了）
+- 所以界面上只留一个兜底：`今天满了`（等价于 cap，再点一次取消）。
+- v0.6.1 曾做过「实际已用 → 校准」输入框，v0.6.2 删掉了：X 不显示今日已关注数，
+  用户也不知道该填什么，这个入口实际不可用。手动记一笔的 `manual` 来源因此只剩 cap。
+
+## 十五、「我什么时候关注了某人」：X 到底存不存这个时间（v0.6.2）
+
+结论：**不存，任何途径都拿不到**。下面是逐条查证，避免以后再被这个问题绕一次。
+
+### 15.1 接口层
+
+| 途径 | 返回的关注时间 |
+|---|---|
+| `GET /i/api/1.1/friends/following/list.json` | 无。user 对象 60+ 字段，关系只有 `following` / `followed_by` 两个布尔值 |
+| GraphQL `Following` | 无。精简后的 user 只有 `core` / `relationship_counts` / `relationship_perspectives` / `tweet_counts` |
+| GraphQL `UserByScreenName`（看别人主页） | 无 |
+| `friendships/show.json` | 返回的是「当前关系状态」，不是「何时建立」 |
+| 官方 API v2 | 没有 follow 事件的 `created_at` |
+
+X 开发者论坛里官方人员（IgorBrigadir）的回复原话：
+
+> It is not a feature of the API so it doesn't matter what you use - the only way is to maybe
+> estimate this based on the creation dates of users, and get a rough time range maybe, because
+> follows are returned in roughly reverse chronological order (newest first) so you can order them
+> but not know the exact time.
+
+关键词是 **roughly**——能排先后，不能定时间。
+
+### 15.2 数据归档也不给
+
+Settings → Your account → Download an archive of your data，等了几天拿到的包里有：
+
+- `following.js`：每个账号一条 `{ accountId, userLink }`
+- `follower.js`：同上
+
+**没有日期字段。** 这是最有力的反证：如果 X 自己有存，归档里一定会有——归档是 GDPR/CCPA 口径的
+「全部个人数据」，连登录 IP、广告兴趣都给了，唯独没给关注时间。
+
+### 15.3 列表顺序顶不顶用
+
+理论上「最上面是最新关注的」，实操不可靠。本项目自己实测的反例：
+
+- 手动关注一个账号，7 分钟后重新拉列表，该账号仍不在前 200 位
+- 也就是 1418 人的列表里，位置和关注时间只有很弱的正相关
+
+推测原因：列表由后端按分片拼装 + 缓存，新关注不一定立刻进头部；取关再关注会改变位置；
+私密账号的关注请求混在队列里。
+
+所以「按位置推算关注时间」最多给一个数量级上的猜测，不能当数据用。
+
+### 15.4 那能统计什么
+
+| 想知道 | 能不能 | 说明 |
+|---|---|---|
+| 装插件之前，我某天关注了几个 | ❌ | 没数据源 |
+| 装插件之前，某人是什么时候关注的 | ❌ | 同上 |
+| 从现在起，我今天关注了几个 | ✅ | 页面嗅探 + 面板记账，精确到分钟 |
+| 从现在起，我某天关注了几个 | ✅ | 扫描补记（手机端操作），落到扫描那一刻 |
+| 某人首次出现在我关注列表的时间 | ✅ | 快照的 `firstSeen`，用于「跟踪最久」排序 |
+
+这就是 v0.6.2 删掉「校准」输入框的原因：X 不显示今日已关注数，用户也无从得知，
+让人填一个数字等于让他猜——那不如不填，改用「本机记 N」这个词把口径说清楚。

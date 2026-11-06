@@ -563,9 +563,24 @@ button { font-family: inherit; font-size: 12.5px; }
   border-radius: 2px 2px 0 0;
 }
 .q-chart .qb.today i { opacity: 1; }
+.q-chart.empty {
+  display: block;
+  height: auto;
+  padding: 6px 0 4px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.q-chart.empty::before { content: "近 14 天还没有记录"; color: var(--text-3); }
 .q-chart .qb i.zero { background: var(--line); opacity: 1; }
 
 .q-ratio { margin: 6px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-2); }
+
+.q-note {
+  margin: 6px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
 
 .q-row {
   display: flex;
@@ -594,20 +609,3 @@ button { font-family: inherit; font-size: 12.5px; }
 .q-row > .q-link:first-child { margin-left: -6px; }
 .q-row > .q-link:last-child { margin-right: -6px; }
 
-.q-input {
-  width: 74px;
-  height: 26px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--bg);
-  color: var(--text);
-  font-family: inherit;
-  font-size: 11.5px;
-  outline: none;
-  -moz-appearance: textfield;
-}
-.q-input::placeholder { color: var(--text-3); }
-.q-input::-webkit-outer-spin-button,
-.q-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.q-input:focus { border-color: var(--accent); }

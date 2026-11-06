@@ -48,12 +48,11 @@ const el = {
   qChart: $("qChart"),
   qCaption: $("qCaption"),
   qRatio: $("qRatio"),
+  qNote: $("qNote"),
   qMode: $("qMode"),
   qCap: $("qCap"),
   qExport: $("qExport"),
   qPeak: $("qPeak"),
-  qSetVal: $("qSetVal"),
-  qSetBtn: $("qSetBtn"),
   withFollowers: $("withFollowers"),
   scanBtn: $("scanBtn"),
   intelBtn: $("intelBtn"),
@@ -291,7 +290,7 @@ function renderQuota() {
   }
   el.qLimit.textContent = "/ " + s.limit;
   el.qLeft.textContent = s.capped ? "0" : String(s.remaining);
-  el.qUsed.textContent = `已关注 ${s.used}`;
+  el.qUsed.textContent = `已记 ${s.used}`;
   el.qUsed.title = [srcText(s), "本机记账，不是 X 服务端的计数"].filter(Boolean).join(" | ");
   el.qUnf.textContent = `取关 ${s.unfollows}`;
   // cap 时额度已耗尽，条子走满；否则按已用比例
@@ -307,7 +306,15 @@ function renderQuotaChart() {
   const s = quota.stats;
   el.qChart.innerHTML = "";
   if (!s) return;
-  const max = Math.max(1, ...s.days.map((d) => d.follows));
+  const peak = Math.max(0, ...s.days.map((d) => d.follows));
+  // 全零时画 14 根 2px 的灰条只会看着像虚线，不如直接说没有
+  el.qChart.classList.toggle("empty", peak <= 0);
+  el.qCaption.hidden = peak <= 0;
+  if (peak <= 0) {
+    el.qPeak.textContent = "";
+    return;
+  }
+  const max = peak;
   for (const d of s.days) {
     const b = document.createElement("div");
     b.className = "qb" + (d.key === s.dayKey ? " today" : "");
@@ -331,7 +338,7 @@ function ratioText(r, hasFollowers) {
   return `关注 ${r.following} · 粉丝 ${r.followers} · 已到比例上限`;
 }
 
-/** 今天的账从哪来，只列有数的来源；塞进「已关注 N」的悬浮提示，不占版面。 */
+/** 今天的账从哪来，只列有数的来源；塞进「已记 N」的悬浮提示，不占版面。 */
 function srcText(s) {
   const bits = Object.entries(s.bySrc || {})
     .filter(([k, v]) => v > 0)
@@ -355,7 +362,12 @@ function renderQuotaDetail() {
     el.qRatio.textContent = ratioText(ratioInfo(st.following, st.followers || 0), hasFollowers);
   }
   const src = srcText(s);
-  el.qUsed.title = [src, "本机记账，不是 X 服务端的计数"].filter(Boolean).join(" | ");
+  el.qUsed.title = [src, "插件本机记的账，不是 X 端的计数"].filter(Boolean).join(" | ");
+
+  // 一条记录都还没有：说明这个数字从什么时候才开始准
+  const none = !(quota.events || []).length;
+  el.qNote.hidden = !none;
+  if (none) el.qNote.textContent = "今天还没记到关注。装插件之前关注的算不进来——X 不提供关注时间。";
 }
 
 function currentWindowStart() {
@@ -385,11 +397,6 @@ function setQuotaEvents(events) {
 }
 
 /** 清掉当前窗口内的关注记录（cap 标记也一起清，否则上限还在）。 */
-function withoutCurrentWindow(events) {
-  const start = currentWindowStart();
-  return (events || []).filter((e) => !(e && e.t >= start && (e.a === "follow" || e.a === "cap")));
-}
-
 /**
  * 扫描后把「新出现的关注」补记到今天的账上。
  *
@@ -1441,31 +1448,6 @@ async function boot() {
     await pushQuotaEvents([{ t: Date.now(), a: "cap", u: "", s: "manual" }]);
     await loadQuota();
     toast("已标满，过了重置点自动恢复");
-  });
-
-  el.qSetBtn.addEventListener("click", async () => {
-    if (!state.userId) {
-      toast("先打开 x.com 让插件连上账号");
-      return;
-    }
-    const raw = String(el.qSetVal.value || "").trim();
-    if (!raw) {
-      toast("先填一个 0~400 的数字");
-      return;
-    }
-    const n = Math.max(0, Math.min(FOLLOW_DAY_LIMIT, Math.round(Number(raw))));
-    if (!Number.isFinite(n)) {
-      toast("填的看不懂，重来");
-      return;
-    }
-    const base = withoutCurrentWindow(quota.events);
-    const now = Date.now();
-    const fill = [];
-    for (let i = 0; i < n; i++) fill.push({ t: now, a: "follow", u: "", s: "manual" });
-    await setQuotaEvents(base.concat(fill));
-    await loadQuota();
-    el.qSetVal.value = "";
-    toast(`今日已用校准为 ${n}，还剩 ${quota.stats ? quota.stats.remaining : "—"}`);
   });
 
   el.qExport.addEventListener("click", () => {

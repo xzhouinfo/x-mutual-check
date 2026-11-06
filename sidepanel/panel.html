@@ -25,7 +25,7 @@
     </div>
     <div class="q-bar"><span id="qFill"></span></div>
     <div class="q-meta">
-      <span id="qUsed">已关注 0</span>
+      <span id="qUsed">已记 0</span>
       <span class="q-dot">·</span>
       <span id="qReset">重置倒计时 —</span>
       <span class="q-dot">·</span>
@@ -36,19 +36,16 @@
       <div class="q-chart" id="qChart"></div>
       <p class="q-caption"><span id="qCaption">近 14 天</span><span id="qPeak"></span></p>
       <p class="q-ratio" id="qRatio" hidden></p>
+      <p class="q-note" id="qNote" hidden></p>
       <div class="q-row">
         <select id="qMode" class="mini-select" title="「一天」从哪里算起">
           <option value="pt">美西 0 点</option>
           <option value="rolling">滚动 24h</option>
         </select>
         <span class="q-spacer"></span>
+        <button id="qCap" class="q-link" aria-pressed="false" title="X 提示「You are unable to follow more people at this time」时点这里，今天就算满了；再点一次取消">今天满了</button>
+        <span class="q-dot">·</span>
         <button id="qExport" class="q-link" title="导出近 14 天每日关注数">导出</button>
-      </div>
-      <div class="q-row">
-        <input id="qSetVal" class="q-input" type="number" min="0" max="400" step="1" placeholder="实际已用" title="X 上实际已关注多少个，填这里校准" />
-        <button id="qSetBtn" class="q-link">校准</button>
-        <span class="q-spacer"></span>
-        <button id="qCap" class="q-link" aria-pressed="false" title="X 提示「You are unable to follow more people at this time」时点这里，今天就算满了；再点一次取消">标记已满</button>
       </div>
     </div>
   </section>

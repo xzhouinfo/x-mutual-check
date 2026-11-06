@@ -89,6 +89,7 @@
   const todayStart = now - elapsedToday;
 
   const seed = [];
+  const EMPTY = /[?&]empty=1/.test(location.search);
   const history = [8, 0, 42, 17, 3, 96, 12, 0, 25, 60, 7, 31, 0];
   history.forEach((n, i) => {
     const base = todayStart - (history.length - i) * 86400000;
@@ -105,7 +106,7 @@
     });
   }
   seed.push({ t: todayStart + Math.floor(elapsedToday / 2), a: "unfollow", u: "99", s: "page" });
-  store.set("xmc:followlog:1234567890", seed);
+  if (!EMPTY) store.set("xmc:followlog:1234567890", seed);
 
   window.chrome = {
     storage,

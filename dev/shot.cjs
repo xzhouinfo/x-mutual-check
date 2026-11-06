@@ -161,10 +161,8 @@ async function main() {
   console.log("METRICS2", JSON.stringify(metrics2));
   await shot(OUT.replace(/\.png$/, "-detail.png"), 620);
 
-  // 校准 → 标记已满 → 再点一次取消
-  await evalJs(`(() => { const i = document.getElementById('qSetVal'); i.value = '120'; document.getElementById('qSetBtn').click(); })()`);
-  await sleep(700);
-  console.log("AFTER SET", await evalJs("document.getElementById('qLeft').textContent + ' | ' + document.getElementById('qUsed').textContent + ' | ' + document.getElementById('qSetVal').value"));
+  // 今天满了 → 再点一次取消
+  console.log("NOTE (有记录时)", await evalJs("document.getElementById('qNote').hidden"));
   await evalJs("document.getElementById('qCap').click()");
   await sleep(700);
   console.log("AFTER CAP", await evalJs("document.getElementById('qLeft').textContent + ' | ' + document.getElementById('qCap').getAttribute('aria-pressed') + ' | ' + document.getElementById('quota').className"));
