@@ -94,7 +94,7 @@ body {
   gap: 7px;
   align-items: flex-start;
   color: var(--text-2);
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   cursor: pointer;
   font-size: 12px;
 }
@@ -144,26 +144,6 @@ button { font-family: inherit; font-size: 12.5px; }
 }
 .progress p { margin: 6px 0 0; }
 
-.stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1px;
-  background: var(--line);
-  border-bottom: 1px solid var(--line);
-}
-.stat {
-  background: var(--surface);
-  padding: 9px 4px;
-  text-align: center;
-}
-.stat b { display: block; font-size: 15px; font-weight: 600; }
-.stat span { font-size: 11px; color: var(--text-3); }
-.stat.ok b { color: var(--ok); }
-.stat.warn b { color: var(--warn); }
-.stat.clickable { cursor: pointer; }
-.stat.clickable:hover { background: var(--surface-2); }
-.stat.clickable:hover span { color: var(--accent); }
-
 .tabs {
   display: flex;
   gap: 2px;
@@ -202,7 +182,8 @@ button { font-family: inherit; font-size: 12.5px; }
   background: var(--surface);
 }
 .toolbar input {
-  flex: 1 1 130px;
+  flex: 1 1 120px;
+  height: 30px;
   min-width: 0;
   border: 1px solid var(--line);
   background: var(--bg);

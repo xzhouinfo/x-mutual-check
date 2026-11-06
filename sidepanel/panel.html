@@ -11,7 +11,7 @@
       <img src="../icons/icon48.png" alt="" class="logo" />
       <div class="brand-text">
         <h1>X 互关检测</h1>
-        <p id="account" class="muted">正在检测页面…</p>
+        <p id="account" class="muted" title="">正在检测页面…</p>
       </div>
     </div>
     <button id="recheck" class="icon-btn" title="重新检测页面状态">⟳</button>
@@ -28,8 +28,6 @@
       <span id="qUsed">已记 0</span>
       <span class="q-dot">·</span>
       <span id="qReset">重置倒计时 —</span>
-      <span class="q-dot">·</span>
-      <span id="qUnf">取关 0</span>
     </div>
 
     <div class="q-detail" id="qDetail" hidden>
@@ -51,9 +49,9 @@
   </section>
 
   <section class="scan-box">
-    <label class="opt">
+    <label class="opt" title="读粉丝列表才能算纯粉丝、掉粉和互关率；页数翻倍，扫描时间也翻倍">
       <input type="checkbox" id="withFollowers" checked />
-      <span>同时拉取粉丝列表<small>（统计纯粉丝 / 掉粉，页数翻倍）</small></span>
+      <span>拉粉丝列表</span>
     </label>
     <div class="row">
       <button id="scanBtn" class="primary" disabled>开始扫描</button>
@@ -67,25 +65,6 @@
     <p id="hint" class="hint"></p>
   </section>
 
-  <section class="stats" id="stats" hidden>
-    <div class="stat"><b id="stFollowing">-</b><span>关注</span></div>
-    <div class="stat ok"><b id="stMutual">-</b><span>互关</span></div>
-    <div class="stat warn"><b id="stNotBack">-</b><span>未回关</span></div>
-    <div class="stat warn clickable" id="cardNotBackBlue" title="点击：只看未回关的蓝V">
-      <b id="stNotBackBlue">-</b><span>未回关蓝V ›</span>
-    </div>
-    <div class="stat warn clickable" id="cardNotBackNon" title="点击：只看未回关、没有蓝V的">
-      <b id="stNotBackNon">-</b><span>未回关非V ›</span>
-    </div>
-    <div class="stat"><b id="stPure">-</b><span>纯粉丝</span></div>
-    <div class="stat extra"><b id="stRate">-</b><span>互关率</span></div>
-    <div class="stat clickable" id="cardStale" title="点击：半年以上没发帖的人">
-      <b id="stStale">-</b><span>半年未更 ›</span>
-    </div>
-    <div class="stat clickable" id="cardZero" title="点击：一条推文都没发过的号">
-      <b id="stZero">-</b><span>零推文 ›</span>
-    </div>
-  </section>
 
   <nav class="tabs" id="tabs" hidden>
     <button data-tab="notBack" class="active">未回关 <em>0</em></button>
@@ -97,11 +76,11 @@
   </nav>
 
   <section class="toolbar" id="toolbar" hidden>
-    <input id="search" type="search" placeholder="搜索昵称 / @用户名 / 简介" />
+    <input id="search" type="search" placeholder="搜索昵称 / @用户名" />
     <!-- 选项由 panel.js 的 renderSortOptions() 按当前 tab 生成：每个 tab 只列自己有数据的排序 -->
     <select id="sortBy" class="mini-select" title="排序方式"></select>
     <button id="blueOnly" class="chip" aria-pressed="false" title="点一下只看蓝V，再点只看非蓝V">蓝V</button>
-    <button id="exportBtn" class="ghost">导出</button>
+    <button id="exportBtn" class="icon-btn" title="导出当前列表为 CSV">⤓</button>
   </section>
 
   <nav class="chips" id="staleChips" hidden></nav>

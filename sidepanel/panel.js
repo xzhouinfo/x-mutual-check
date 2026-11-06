@@ -42,7 +42,6 @@ const el = {
   qFill: $("qFill"),
   qUsed: $("qUsed"),
   qReset: $("qReset"),
-  qUnf: $("qUnf"),
   qToggle: $("qToggle"),
   qDetail: $("qDetail"),
   qChart: $("qChart"),
@@ -61,20 +60,6 @@ const el = {
   barFill: $("barFill"),
   progressText: $("progressText"),
   hint: $("hint"),
-  stats: $("stats"),
-  stFollowing: $("stFollowing"),
-  stMutual: $("stMutual"),
-  stNotBack: $("stNotBack"),
-  stNotBackBlue: $("stNotBackBlue"),
-  cardNotBackBlue: $("cardNotBackBlue"),
-  stNotBackNon: $("stNotBackNon"),
-  cardNotBackNon: $("cardNotBackNon"),
-  stPure: $("stPure"),
-  stRate: $("stRate"),
-  stStale: $("stStale"),
-  cardStale: $("cardStale"),
-  stZero: $("stZero"),
-  cardZero: $("cardZero"),
   tabs: $("tabs"),
   toolbar: $("toolbar"),
   search: $("search"),
@@ -292,7 +277,6 @@ function renderQuota() {
   el.qLeft.textContent = s.capped ? "0" : String(s.remaining);
   el.qUsed.textContent = `已记 ${s.used}`;
   el.qUsed.title = [srcText(s), "本机记账，不是 X 服务端的计数"].filter(Boolean).join(" | ");
-  el.qUnf.textContent = `取关 ${s.unfollows}`;
   // cap 时额度已耗尽，条子走满；否则按已用比例
   const pct = s.capped ? 100 : Math.min(100, Math.round((s.used / s.limit) * 100));
   el.qFill.style.width = pct + "%";
@@ -591,10 +575,7 @@ async function startScan() {
         false
       );
     } else if (state.statusCovered && state.statusCovered < result.stats.following) {
-      setHint(
-        `沉默号只覆盖 ${state.statusCovered}/${result.stats.following} 人：X 只有旧接口带「最后发帖时间」，它最多给约 500 个关注。其余人的最后发帖时间显示为未知，可点「时间未知」档查看。`,
-        false
-      );
+      setHint(`沉默数据覆盖 ${state.statusCovered}/${result.stats.following} 人，其余显示「时间未知」`, false);
     }
   } catch (e) {
     showProgress(false);
@@ -1187,33 +1168,17 @@ function renderList() {
   appendChunk();
 }
 
-function renderStats() {
-  if (!state.result) {
-    el.stats.hidden = true;
-    return;
-  }
-  const s = state.result.stats;
-  el.stats.hidden = false;
-  el.stFollowing.textContent = fmt(s.following);
-  el.stMutual.textContent = fmt(s.mutual);
-  el.stNotBack.textContent = fmt(s.notBack);
-  el.stNotBackBlue.textContent = fmt(countBlue(state.result.notBack));
-  el.stNotBackNon.textContent = fmt(state.result.notBack.filter((u) => !u.verified).length);
-  el.stPure.textContent = s.pureFans === null || s.pureFans === undefined ? "—" : fmt(s.pureFans);
-  el.stRate.textContent = s.mutualRate + "%";
-
-  const st = staleStats(state.result.following);
-  el.stStale.textContent = fmt(st.d180);
-  el.stZero.textContent = fmt(st.none);
-}
-
 const BLUE_LABEL = { all: "蓝V", blue: "仅蓝V", nonblue: "仅非V" };
 
 function syncFilterUI() {
+  const nb = (state.result && state.result.notBack) || [];
+  const nBlue = countBlue(nb);
+  const nNon = nb.filter((u) => !u.verified).length;
   el.blueOnly.textContent = BLUE_LABEL[state.blueMode] || "蓝V";
   el.blueOnly.setAttribute("aria-pressed", String(state.blueMode !== "all"));
+  const tail = state.result ? `（未回关里蓝V ${nBlue}、非V ${nNon}）` : "";
   el.blueOnly.title =
-    state.blueMode === "all" ? "点一下：只看蓝V" : state.blueMode === "blue" ? "再点一下：只看非蓝V" : "再点一下：显示全部";
+    (state.blueMode === "all" ? "点一下：只看蓝V" : state.blueMode === "blue" ? "再点一下：只看非蓝V" : "再点一下：显示全部") + tail;
 }
 
 /** 沉默 tab 的分档 chips：每档带人数 */
@@ -1284,6 +1249,10 @@ function renderFooter() {
   el.footer.innerHTML = "";
   const left = document.createElement("span");
   const bits = [];
+  if (state.result) {
+    bits.push(`关注 ${fmt(state.result.stats.following)}`);
+    bits.push(`互关率 ${state.result.stats.mutualRate}%`);
+  }
   if (snap) bits.push("上次扫描 " + timeText(snap.ts));
   if (state.intelAt) bits.push(`互动 ${timeText(state.intelAt)}`);
   left.textContent = bits.join(" · ");
@@ -1311,7 +1280,6 @@ function renderFooter() {
 }
 
 function renderAll() {
-  renderStats();
   renderTabs();
   syncFilterUI();
   renderList();
@@ -1377,27 +1345,6 @@ async function boot() {
       recent: "按最近互动时间排序",
     };
     toast(tips[state.sortBy] || "已切换排序");
-  });
-  el.cardNotBackBlue.addEventListener("click", () => {
-    if (!state.result) return;
-    jumpTo("notBack", { blueMode: "blue" });
-    toast(`未回关的蓝V：${countBlue(state.result.notBack)} 人`);
-  });
-  el.cardNotBackNon.addEventListener("click", () => {
-    if (!state.result) return;
-    const n = state.result.notBack.filter((u) => !u.verified).length;
-    jumpTo("notBack", { blueMode: "nonblue" });
-    toast(`未回关、没有蓝V的：${n} 人`);
-  });
-  el.cardStale.addEventListener("click", () => {
-    if (!state.result) return;
-    jumpTo("stale", { bucket: "d180" });
-    toast("半年以上没发帖的人");
-  });
-  el.cardZero.addEventListener("click", () => {
-    if (!state.result) return;
-    jumpTo("stale", { bucket: "none" });
-    toast("一条推文都没发过的号");
   });
   el.search.addEventListener("input", (e) => {
     state.query = e.target.value;
@@ -1504,22 +1451,6 @@ function switchTab(tab) {
   el.list.scrollTop = 0;
 }
 
-/** 统计卡片点击：跳 tab + 带上筛选条件。 */
-function jumpTo(tab, { blueMode = "all", bucket = "all" } = {}) {
-  state.blueMode = blueMode;
-  state.staleBucket = bucket;
-  state.query = "";
-  el.search.value = "";
-  state.tab = tab;
-  const def = DEFAULT_SORT[tab];
-  state.sortBy = def;
-  el.sortBy.value = def;
-  syncFilterUI();
-  renderTabs();
-  renderList();
-  el.list.scrollTop = 0;
-}
-
 async function detect() {
   setAccount("正在检测页面…");
   el.scanBtn.disabled = true;
@@ -1542,7 +1473,8 @@ async function detect() {
   }
 
   state.userId = info.userId;
-  setAccount("已连接 · 账号 ID " + info.userId);
+  setAccount("已连接");
+  el.account.title = "账号 ID " + info.userId;
   el.scanBtn.disabled = false;
   el.intelBtn.disabled = false;
   setHint("");

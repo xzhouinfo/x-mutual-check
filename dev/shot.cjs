@@ -74,6 +74,8 @@ async function main() {
       ws.send(JSON.stringify({ id: mid, method, params }));
     });
 
+  await send("Network.enable");
+  await send("Network.setCacheDisabled", { cacheDisabled: true });
   await send("Page.enable");
   if (process.env.XMC_DARK !== "1") {
     await send("Emulation.setEmulatedMedia", {
@@ -125,7 +127,6 @@ async function main() {
       left: document.getElementById('qLeft').textContent,
       used: document.getElementById('qUsed').textContent,
       reset: document.getElementById('qReset').textContent,
-      unf: document.getElementById('qUnf').textContent,
       fill: document.getElementById('qFill').style.width,
       rows: document.querySelectorAll('#list .user').length,
     };

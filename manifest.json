@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "X 互关检测",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "一键检查 X（Twitter）的互关 / 未回关 / 纯粉丝，看谁跟你互动最多、谁很久没更新，并统计每天还能关注多少个（美西 0 点重置）。数据全量读取，只在本地处理。",
   "minimum_chrome_version": "116",
   "permissions": [
